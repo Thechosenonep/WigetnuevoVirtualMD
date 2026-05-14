@@ -5,6 +5,33 @@ if ( ! defined( 'ABSPATH' ) ) {
   exit;
 }
 
+/**
+ * Invalida todos los transients de disponibilidad de VirtualMD.
+ *
+ * Se llama automáticamente cuando Amelia crea, cancela o reprograma
+ * una cita, y también manualmente desde nuestros flujos de pago
+ * (Stripe/PayPal) después de crear la cita exitosamente.
+ */
+function vm_amelia_invalidate_availability_cache() {
+  global $wpdb;
+
+  // Borrar todos los transients que empiecen con vm_amelia_
+  // Esto cubre: catalog, providers, has_availability, available_provider_ids, team_member_map
+  $wpdb->query(
+    "DELETE FROM {$wpdb->options}
+     WHERE option_name LIKE '_transient_vm_amelia_%'
+        OR option_name LIKE '_transient_timeout_vm_amelia_%'"
+  );
+}
+
+// --- Hooks de Amelia: invalidar caché cuando cambia una reserva ---
+add_action( 'amelia_after_booking_added',       __NAMESPACE__ . '\\vm_amelia_invalidate_availability_cache' );
+add_action( 'amelia_after_booking_canceled',    __NAMESPACE__ . '\\vm_amelia_invalidate_availability_cache' );
+add_action( 'amelia_after_booking_rescheduled', __NAMESPACE__ . '\\vm_amelia_invalidate_availability_cache' );
+
+// Hooks de acción internos de Amelia (post-booking actions)
+add_action( 'AmeliaAppointmentBookingAdded',    __NAMESPACE__ . '\\vm_amelia_invalidate_availability_cache' );
+
 function vm_amelia_get_catalog_handler() {
   $cache_key = 'vm_amelia_catalog_available_v2';
   $cached    = get_transient( $cache_key );

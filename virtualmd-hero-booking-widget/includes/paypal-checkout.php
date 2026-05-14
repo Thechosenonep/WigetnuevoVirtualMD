@@ -1709,6 +1709,12 @@ function vm_paypal_create_amelia_booking( $booking_data, $order_id, $paypal_deta
         ];
     }
 
+    // Invalidar caché de disponibilidad incluso si no fue 100% exitoso
+    // pero la cita fue creada (status 2xx)
+    if ( $status_code >= 200 && $status_code < 300 ) {
+        vm_amelia_invalidate_availability_cache();
+    }
+
     return [
         'success' => false,
         'message' => isset( $decoded['message'] ) ? $decoded['message'] : 'Error al crear la cita',
