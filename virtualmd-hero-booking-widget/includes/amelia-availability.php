@@ -1,42 +1,16 @@
 <?php
 namespace VirtualMD\HeroBooking;
 
-if ( ! defined( 'ABSPATH' ) ) {
+if (!defined('ABSPATH')) {
   exit;
 }
 
-/**
- * Invalida todos los transients de disponibilidad de VirtualMD.
- *
- * Se llama automáticamente cuando Amelia crea, cancela o reprograma
- * una cita, y también manualmente desde nuestros flujos de pago
- * (Stripe/PayPal) después de crear la cita exitosamente.
- */
-function vm_amelia_invalidate_availability_cache() {
-  global $wpdb;
-
-  // Borrar todos los transients que empiecen con vm_amelia_
-  // Esto cubre: catalog, providers, has_availability, available_provider_ids, team_member_map
-  $wpdb->query(
-    "DELETE FROM {$wpdb->options}
-     WHERE option_name LIKE '_transient_vm_amelia_%'
-        OR option_name LIKE '_transient_timeout_vm_amelia_%'"
-  );
-}
-
-// --- Hooks de Amelia: invalidar caché cuando cambia una reserva ---
-add_action( 'amelia_after_booking_added',       __NAMESPACE__ . '\\vm_amelia_invalidate_availability_cache' );
-add_action( 'amelia_after_booking_canceled',    __NAMESPACE__ . '\\vm_amelia_invalidate_availability_cache' );
-add_action( 'amelia_after_booking_rescheduled', __NAMESPACE__ . '\\vm_amelia_invalidate_availability_cache' );
-
-// Hooks de acción internos de Amelia (post-booking actions)
-add_action( 'AmeliaAppointmentBookingAdded',    __NAMESPACE__ . '\\vm_amelia_invalidate_availability_cache' );
-
-function vm_amelia_get_catalog_handler() {
+function vm_amelia_get_catalog_handler()
+{
   $cache_key = 'vm_amelia_catalog_available_v2';
-  $cached    = get_transient( $cache_key );
-  if ( $cached !== false ) {
-    wp_send_json_success( $cached );
+  $cached = get_transient($cache_key);
+  if ($cached !== false) {
+    wp_send_json_success($cached);
     return;
   }
 
@@ -50,13 +24,13 @@ function vm_amelia_get_catalog_handler() {
     ARRAY_A
   );
 
-  if ( empty( $categories ) ) {
-    wp_send_json_success( [] );
+  if (empty($categories)) {
+    wp_send_json_success([]);
     return;
   }
 
-  $cat_ids = wp_list_pluck( $categories, 'id' );
-  $in      = implode( ',', array_map( 'intval', $cat_ids ) );
+  $cat_ids = wp_list_pluck($categories, 'id');
+  $in = implode(',', array_map('intval', $cat_ids));
 
   // Servicios visibles dentro de esas categorías
   $services = $wpdb->get_results(
@@ -68,93 +42,95 @@ function vm_amelia_get_catalog_handler() {
   );
 
   $by_cat = [];
-  foreach ( $services as $s ) {
-    if ( ! vm_amelia_service_has_availability( (int) $s['id'] ) ) {
+  foreach ($services as $s) {
+    if (!vm_amelia_service_has_availability((int) $s['id'])) {
       continue;
     }
 
-    $by_cat[ (int) $s['categoryId'] ][] = [
-      'id'       => (int) $s['id'],
-      'type'     => $s['name'],
-      'mode'     => 'Videoconsulta',
-      'price'    => (float) $s['price'],
+    $by_cat[(int) $s['categoryId']][] = [
+      'id' => (int) $s['id'],
+      'type' => $s['name'],
+      'mode' => 'Videoconsulta',
+      'price' => (float) $s['price'],
       'duration' => (int) $s['duration'],
     ];
   }
 
   $output = [];
-  foreach ( $categories as $c ) {
+  foreach ($categories as $c) {
     $cid = (int) $c['id'];
-    if ( empty( $by_cat[ $cid ] ) ) {
+    if (empty($by_cat[$cid])) {
       continue;
     }
     $output[] = [
       'categoryId' => $cid,
-      'category'   => $c['name'],
-      'services'   => $by_cat[ $cid ],
+      'category' => $c['name'],
+      'services' => $by_cat[$cid],
     ];
   }
 
-  set_transient( $cache_key, $output, 5 * MINUTE_IN_SECONDS );
-  wp_send_json_success( $output );
+  set_transient($cache_key, $output, 5 * MINUTE_IN_SECONDS);
+  wp_send_json_success($output);
 }
 
-function vm_amelia_normalize_team_member_name( $name ) {
-  $prefixes = [ 'Dr\.', 'Dra\.', 'Dr', 'Dra', 'Lic\.', 'Lic', 'Mtro\.', 'Mtro' ];
-  $name     = preg_replace( '/^(' . implode( '|', $prefixes ) . ')\s*/i', '', (string) $name );
-  $name     = trim( preg_replace( '/\s+/', ' ', $name ) );
+function vm_amelia_normalize_team_member_name($name)
+{
+  $prefixes = ['Dr\.', 'Dra\.', 'Dr', 'Dra', 'Lic\.', 'Lic', 'Mtro\.', 'Mtro'];
+  $name = preg_replace('/^(' . implode('|', $prefixes) . ')\s*/i', '', (string) $name);
+  $name = trim(preg_replace('/\s+/', ' ', $name));
 
-  if ( function_exists( 'remove_accents' ) ) {
-    $name = remove_accents( $name );
+  if (function_exists('remove_accents')) {
+    $name = remove_accents($name);
   }
 
-  return strtolower( trim( $name ) );
+  return strtolower(trim($name));
 }
 
-function vm_amelia_get_team_member_map() {
+function vm_amelia_get_team_member_map()
+{
   $cache_key = 'vm_amelia_team_member_map_v1';
-  $cached    = get_transient( $cache_key );
-  if ( is_array( $cached ) ) {
+  $cached = get_transient($cache_key);
+  if (is_array($cached)) {
     return $cached;
   }
 
-  $query = new \WP_Query( [
-    'post_type'      => 'ctshowcase_member',
+  $query = new \WP_Query([
+    'post_type' => 'ctshowcase_member',
     'posts_per_page' => -1,
-    'post_status'    => 'publish',
-    'no_found_rows'  => true,
-  ] );
+    'post_status' => 'publish',
+    'no_found_rows' => true,
+  ]);
 
   $map = [];
-  foreach ( $query->get_posts() as $post ) {
+  foreach ($query->get_posts() as $post) {
     $post_id = (int) $post->ID;
-    $key     = vm_amelia_normalize_team_member_name( $post->post_title );
+    $key = vm_amelia_normalize_team_member_name($post->post_title);
 
-    if ( ! $key ) {
+    if (!$key) {
       continue;
     }
 
-    $job_title = get_post_meta( $post_id, 'ctshowcase_job_title', true );
-    $excerpt   = has_excerpt( $post_id )
-      ? get_the_excerpt( $post_id )
-      : wp_trim_words( wp_strip_all_tags( $post->post_content ), 32 );
-    $content   = apply_filters( 'the_content', $post->post_content );
-    $permalink = get_permalink( $post_id );
-    $image     = get_the_post_thumbnail_url( $post_id, 'medium' ) ?: '';
+    $job_title = get_post_meta($post_id, 'ctshowcase_job_title', true);
+    $excerpt = has_excerpt($post_id)
+      ? get_the_excerpt($post_id)
+      : wp_trim_words(wp_strip_all_tags($post->post_content), 32);
+    $content = apply_filters('the_content', $post->post_content);
+    $permalink = get_permalink($post_id);
+    $image = get_the_post_thumbnail_url($post_id, 'medium') ?: '';
 
-    $map[ $key ] = [
-      'id'        => $post_id,
-      'image'     => esc_url_raw( $image ),
-      'url'       => esc_url_raw( $permalink ),
-      'cargo'     => wp_strip_all_tags( (string) $job_title ),
-      'resumen'   => wp_strip_all_tags( (string) $excerpt ),
-      'contenido' => wp_kses_post( $content ),
-      'enlace'    => esc_url_raw( $permalink ),
+    $map[$key] = [
+      'id' => $post_id,
+      'image' => esc_url_raw($image),
+      'url' => esc_url_raw($permalink),
+      'cargo' => wp_strip_all_tags((string) $job_title),
+      'resumen' => wp_strip_all_tags((string) $excerpt),
+      'contenido' => wp_kses_post($content),
+      'enlace' => esc_url_raw($permalink),
     ];
   }
 
   wp_reset_postdata();
-  set_transient( $cache_key, $map, 5 * MINUTE_IN_SECONDS );
+  set_transient($cache_key, $map, 5 * MINUTE_IN_SECONDS);
 
   return $map;
 }
@@ -164,31 +140,32 @@ function vm_amelia_get_team_member_map() {
  * Params GET: serviceId (opcional)
  * Retorna: [{ id, name, meta, image, teamMember }]
  */
-function vm_amelia_get_providers_handler() {
-  $service_id = isset( $_GET['serviceId'] ) ? (int) $_GET['serviceId'] : 0;
+function vm_amelia_get_providers_handler()
+{
+  $service_id = isset($_GET['serviceId']) ? (int) $_GET['serviceId'] : 0;
 
   $cache_key = 'vm_amelia_providers_available_v2_' . $service_id;
-  $cached    = get_transient( $cache_key );
-  if ( $cached !== false ) {
-    wp_send_json_success( $cached );
+  $cached = get_transient($cache_key);
+  if ($cached !== false) {
+    wp_send_json_success($cached);
     return;
   }
 
   global $wpdb;
   $t_usr = $wpdb->prefix . 'amelia_users';
-  $t_ps  = $wpdb->prefix . 'amelia_providers_to_services';
+  $t_ps = $wpdb->prefix . 'amelia_providers_to_services';
   $t_svc = $wpdb->prefix . 'amelia_services';
 
   // Obtener providers (opcionalmente filtrados por servicio)
-  if ( $service_id ) {
-    $providers = $wpdb->get_results( $wpdb->prepare(
+  if ($service_id) {
+    $providers = $wpdb->get_results($wpdb->prepare(
       "SELECT DISTINCT u.id, u.firstName, u.lastName
        FROM {$t_usr} u
        INNER JOIN {$t_ps} ps ON ps.userId = u.id
        WHERE u.status = 'visible' AND u.type = 'provider' AND ps.serviceId = %d
        ORDER BY u.firstName ASC, u.lastName ASC",
       $service_id
-    ), ARRAY_A );
+    ), ARRAY_A);
   } else {
     $providers = $wpdb->get_results(
       "SELECT id, firstName, lastName FROM {$t_usr}
@@ -198,13 +175,13 @@ function vm_amelia_get_providers_handler() {
     );
   }
 
-  if ( empty( $providers ) ) {
-    wp_send_json_success( [] );
+  if (empty($providers)) {
+    wp_send_json_success([]);
     return;
   }
 
-  $prov_ids = array_map( 'intval', wp_list_pluck( $providers, 'id' ) );
-  $in       = implode( ',', $prov_ids );
+  $prov_ids = array_map('intval', wp_list_pluck($providers, 'id'));
+  $in = implode(',', $prov_ids);
 
   // Servicios de cada provider para el meta
   $svc_rows = $wpdb->get_results(
@@ -217,68 +194,69 @@ function vm_amelia_get_providers_handler() {
   );
 
   $meta_map = [];
-  foreach ( $svc_rows as $r ) {
-    $meta_map[ (int) $r['userId'] ][] = $r['name'];
+  foreach ($svc_rows as $r) {
+    $meta_map[(int) $r['userId']][] = $r['name'];
   }
 
-  $available_provider_ids = $service_id ? vm_amelia_get_available_provider_ids_for_service( $service_id ) : [];
-  $team_members           = vm_amelia_get_team_member_map();
+  $available_provider_ids = $service_id ? vm_amelia_get_available_provider_ids_for_service($service_id) : [];
+  $team_members = vm_amelia_get_team_member_map();
 
   $output = [];
-  foreach ( $providers as $p ) {
-    $pid  = (int) $p['id'];
+  foreach ($providers as $p) {
+    $pid = (int) $p['id'];
 
-    if ( $service_id && ! in_array( $pid, $available_provider_ids, true ) ) {
+    if ($service_id && !in_array($pid, $available_provider_ids, true)) {
       continue;
     }
 
-    $name = trim( $p['firstName'] . ' ' . $p['lastName'] );
-    $meta = isset( $meta_map[ $pid ] )
-      ? implode( ', ', array_unique( $meta_map[ $pid ] ) )
+    $name = trim($p['firstName'] . ' ' . $p['lastName']);
+    $meta = isset($meta_map[$pid])
+      ? implode(', ', array_unique($meta_map[$pid]))
       : '';
-    $team_key    = vm_amelia_normalize_team_member_name( $name );
-    $team_member = isset( $team_members[ $team_key ] ) ? $team_members[ $team_key ] : [
-      'id'        => null,
-      'image'     => '',
-      'url'       => '',
-      'cargo'     => '',
-      'resumen'   => '',
+    $team_key = vm_amelia_normalize_team_member_name($name);
+    $team_member = isset($team_members[$team_key]) ? $team_members[$team_key] : [
+      'id' => null,
+      'image' => '',
+      'url' => '',
+      'cargo' => '',
+      'resumen' => '',
       'contenido' => '',
-      'enlace'    => '',
+      'enlace' => '',
     ];
-    $specialties = isset( $meta_map[ $pid ] ) ? array_values( array_unique( $meta_map[ $pid ] ) ) : [];
+    $specialties = isset($meta_map[$pid]) ? array_values(array_unique($meta_map[$pid])) : [];
 
     $output[] = [
-      'id'          => $pid,
-      'name'        => $name,
-      'meta'        => $meta,
+      'id' => $pid,
+      'name' => $name,
+      'meta' => $meta,
       'specialties' => $specialties,
-      'image'       => $team_member['image'],
-      'imagen'      => $team_member['image'],
-      'profileUrl'  => $team_member['url'],
-      'teamMember'  => $team_member,
+      'image' => $team_member['image'],
+      'imagen' => $team_member['image'],
+      'profileUrl' => $team_member['url'],
+      'teamMember' => $team_member,
       'team_member' => [
-        'id'        => $team_member['id'],
-        'cargo'     => $team_member['cargo'],
-        'resumen'   => $team_member['resumen'],
+        'id' => $team_member['id'],
+        'cargo' => $team_member['cargo'],
+        'resumen' => $team_member['resumen'],
         'contenido' => $team_member['contenido'],
-        'enlace'    => $team_member['enlace'],
+        'enlace' => $team_member['enlace'],
       ],
     ];
   }
 
-  set_transient( $cache_key, $output, 5 * MINUTE_IN_SECONDS );
-  wp_send_json_success( $output );
+  set_transient($cache_key, $output, 5 * MINUTE_IN_SECONDS);
+  wp_send_json_success($output);
 }
 
 /**
  * Helper: construir mapa de horarios semanales para providers de un servicio.
  * Retorna: [ providerId => [ dayIndex => [ [ 'start' => 'HH:MM', 'end' => 'HH:MM' ], ... ] ] ]
  */
-function vm_amelia_build_schedule_map( $prov_ids, $service_id ) {
+function vm_amelia_build_schedule_map($prov_ids, $service_id)
+{
   global $wpdb;
   $prefix = $wpdb->prefix;
-  $in     = implode( ',', array_map( 'intval', $prov_ids ) );
+  $in = implode(',', array_map('intval', $prov_ids));
 
   // 1. Horarios base por día de la semana
   $wd_rows = $wpdb->get_results(
@@ -288,37 +266,37 @@ function vm_amelia_build_schedule_map( $prov_ids, $service_id ) {
     ARRAY_A
   );
 
-  $schedule    = [];
-  $wd_id_map   = []; // weekDayId => { userId, dayIndex }
-  $wd_ids      = [];
+  $schedule = [];
+  $wd_id_map = []; // weekDayId => { userId, dayIndex }
+  $wd_ids = [];
 
-  foreach ( $wd_rows as $r ) {
+  foreach ($wd_rows as $r) {
     $uid = (int) $r['userId'];
-    $di  = (int) $r['dayIndex'];
+    $di = (int) $r['dayIndex'];
     $wid = (int) $r['id'];
 
-    $wd_ids[]          = $wid;
-    $wd_id_map[ $wid ] = [ 'userId' => $uid, 'dayIndex' => $di ];
+    $wd_ids[] = $wid;
+    $wd_id_map[$wid] = ['userId' => $uid, 'dayIndex' => $di];
 
-    if ( ! isset( $schedule[ $uid ] ) ) {
-      $schedule[ $uid ] = [];
+    if (!isset($schedule[$uid])) {
+      $schedule[$uid] = [];
     }
-    if ( ! isset( $schedule[ $uid ][ $di ] ) ) {
-      $schedule[ $uid ][ $di ] = [];
+    if (!isset($schedule[$uid][$di])) {
+      $schedule[$uid][$di] = [];
     }
 
     // Horario por defecto del weekday
-    if ( ! empty( $r['startTime'] ) && ! empty( $r['endTime'] ) ) {
-      $schedule[ $uid ][ $di ][] = [
-        'start' => substr( $r['startTime'], 0, 5 ),
-        'end'   => substr( $r['endTime'], 0, 5 ),
+    if (!empty($r['startTime']) && !empty($r['endTime'])) {
+      $schedule[$uid][$di][] = [
+        'start' => substr($r['startTime'], 0, 5),
+        'end' => substr($r['endTime'], 0, 5),
       ];
     }
   }
 
   // 2. Periodos específicos (overrides)
-  if ( ! empty( $wd_ids ) ) {
-    $wd_in   = implode( ',', $wd_ids );
+  if (!empty($wd_ids)) {
+    $wd_in = implode(',', $wd_ids);
     $periods = $wpdb->get_results(
       "SELECT p.id AS periodId, p.weekDayId, p.startTime, p.endTime
        FROM {$prefix}amelia_providers_to_periods p
@@ -326,10 +304,10 @@ function vm_amelia_build_schedule_map( $prov_ids, $service_id ) {
       ARRAY_A
     );
 
-    if ( ! empty( $periods ) ) {
+    if (!empty($periods)) {
       // Restricciones de servicio por periodo
-      $period_ids = wp_list_pluck( $periods, 'periodId' );
-      $p_in       = implode( ',', array_map( 'intval', $period_ids ) );
+      $period_ids = wp_list_pluck($periods, 'periodId');
+      $p_in = implode(',', array_map('intval', $period_ids));
 
       $ps_rows = $wpdb->get_results(
         "SELECT periodId, serviceId
@@ -339,33 +317,33 @@ function vm_amelia_build_schedule_map( $prov_ids, $service_id ) {
       );
 
       $period_svc = [];
-      foreach ( $ps_rows as $ps ) {
-        $period_svc[ (int) $ps['periodId'] ][] = (int) $ps['serviceId'];
+      foreach ($ps_rows as $ps) {
+        $period_svc[(int) $ps['periodId']][] = (int) $ps['serviceId'];
       }
 
       // Agrupar periodos por weekDayId
       $periods_by_wd = [];
-      foreach ( $periods as $p ) {
+      foreach ($periods as $p) {
         $pid_key = (int) $p['periodId'];
         // Si el periodo tiene restricción de servicio y no aplica a nuestro servicio, omitir
-        if ( isset( $period_svc[ $pid_key ] ) && ! in_array( $service_id, $period_svc[ $pid_key ], true ) ) {
+        if (isset($period_svc[$pid_key]) && !in_array($service_id, $period_svc[$pid_key], true)) {
           continue;
         }
         $wdId = (int) $p['weekDayId'];
-        $periods_by_wd[ $wdId ][] = [
-          'start' => substr( $p['startTime'], 0, 5 ),
-          'end'   => substr( $p['endTime'], 0, 5 ),
+        $periods_by_wd[$wdId][] = [
+          'start' => substr($p['startTime'], 0, 5),
+          'end' => substr($p['endTime'], 0, 5),
         ];
       }
 
       // Los periodos reemplazan el horario por defecto del weekday
-      foreach ( $periods_by_wd as $wdId => $period_list ) {
-        if ( ! isset( $wd_id_map[ $wdId ] ) ) {
+      foreach ($periods_by_wd as $wdId => $period_list) {
+        if (!isset($wd_id_map[$wdId])) {
           continue;
         }
-        $uid = $wd_id_map[ $wdId ]['userId'];
-        $di  = $wd_id_map[ $wdId ]['dayIndex'];
-        $schedule[ $uid ][ $di ] = $period_list;
+        $uid = $wd_id_map[$wdId]['userId'];
+        $di = $wd_id_map[$wdId]['dayIndex'];
+        $schedule[$uid][$di] = $period_list;
       }
     }
   }
@@ -373,99 +351,106 @@ function vm_amelia_build_schedule_map( $prov_ids, $service_id ) {
   return $schedule;
 }
 
-function vm_amelia_availability_window_dates() {
-  $tz    = function_exists( 'wp_timezone' ) ? wp_timezone() : new \DateTimeZone( date_default_timezone_get() );
-  $start = new \DateTimeImmutable( 'today', $tz );
-  $end   = $start->modify( '+3 months' );
+function vm_amelia_availability_window_dates()
+{
+  $tz = function_exists('wp_timezone') ? wp_timezone() : new \DateTimeZone(date_default_timezone_get());
+  $start = new \DateTimeImmutable('today', $tz);
+  $end = $start->modify('+3 months');
 
-  return [ $start->format( 'Y-m-d' ), $end->format( 'Y-m-d' ) ];
+  return [$start->format('Y-m-d'), $end->format('Y-m-d')];
 }
 
-function vm_amelia_get_slots_data( $service_id, $provider_id = 0, $start_date = '', $end_date = '', $duration = 0 ) {
+function vm_amelia_get_slots_data($service_id, $provider_id = 0, $start_date = '', $end_date = '', $duration = 0)
+{
   global $wpdb;
-  $prefix  = $wpdb->prefix;
-  $is_auto = empty( $provider_id );
+  $prefix = $wpdb->prefix;
+  $is_auto = empty($provider_id);
 
-  $now_ts      = current_time( 'timestamp' );
-  $today_str   = date( 'Y-m-d', $now_ts );
-  $now_minutes = (int) date( 'H', $now_ts ) * 60 + (int) date( 'i', $now_ts );
+  $now_ts = current_time('timestamp');
+  $today_str = date('Y-m-d', $now_ts);
+  $now_minutes = (int) date('H', $now_ts) * 60 + (int) date('i', $now_ts);
 
-  if ( empty( $start_date ) ) {
+  if (empty($start_date)) {
     $start_date = $today_str;
   }
 
-  if ( $start_date < $today_str ) {
+  if ($start_date < $today_str) {
     $start_date = $today_str;
   }
 
-  if ( empty( $end_date ) ) {
-    $end_date = date( 'Y-m-t', strtotime( $start_date ) );
+  if (empty($end_date)) {
+    $end_date = date('Y-m-t', strtotime($start_date));
   }
 
-  if ( $end_date < $start_date ) {
+  if ($end_date < $start_date) {
     $end_date = $start_date;
   }
 
   // Duración del servicio (en segundos) — convertir a minutos
-  if ( ! $duration ) {
-    $duration = (int) $wpdb->get_var( $wpdb->prepare(
+  if (!$duration) {
+    $duration = (int) $wpdb->get_var($wpdb->prepare(
       "SELECT duration FROM {$prefix}amelia_services WHERE id = %d",
       $service_id
-    ) );
-    if ( ! $duration ) {
+    ));
+    if (!$duration) {
       $duration = 3600;
     }
   }
-  $duration_min = intval( $duration / 60 );
+  $duration_min = intval($duration / 60);
 
   // Buffers del servicio (timeBefore / timeAfter en segundos)
-  $svc_info = $wpdb->get_row( $wpdb->prepare(
+  $svc_info = $wpdb->get_row($wpdb->prepare(
     "SELECT timeBefore, timeAfter FROM {$prefix}amelia_services WHERE id = %d",
     $service_id
-  ), ARRAY_A );
-  $time_before_min = $svc_info ? intval( (int) $svc_info['timeBefore'] / 60 ) : 0;
-  $time_after_min  = $svc_info ? intval( (int) $svc_info['timeAfter'] / 60 ) : 0;
+  ), ARRAY_A);
+  $time_before_min = $svc_info ? intval((int) $svc_info['timeBefore'] / 60) : 0;
+  $time_after_min = $svc_info ? intval((int) $svc_info['timeAfter'] / 60) : 0;
 
   // 1. Obtener providers para este servicio
-  if ( $is_auto ) {
-    $prov_ids = $wpdb->get_col( $wpdb->prepare(
+  if ($is_auto) {
+    $prov_ids = $wpdb->get_col($wpdb->prepare(
       "SELECT DISTINCT ps.userId
        FROM {$prefix}amelia_providers_to_services ps
        INNER JOIN {$prefix}amelia_users u ON u.id = ps.userId
        WHERE ps.serviceId = %d AND u.status = 'visible' AND u.type = 'provider'",
       $service_id
-    ) );
-    $prov_ids = array_map( 'intval', $prov_ids );
+    ));
+    $prov_ids = array_map('intval', $prov_ids);
   } else {
-    $prov_ids = [ (int) $provider_id ];
+    $prov_ids = [(int) $provider_id];
   }
 
-  if ( empty( $prov_ids ) ) {
-    return [ 'slots' => (object) [], 'occupied' => (object) [] ];
+  if (empty($prov_ids)) {
+    return ['slots' => (object) [], 'occupied' => (object) []];
   }
 
-  $prov_in = implode( ',', $prov_ids );
+  $prov_in = implode(',', $prov_ids);
 
   // 2. Horarios semanales
-  $schedule = vm_amelia_build_schedule_map( $prov_ids, $service_id );
+  $schedule = vm_amelia_build_schedule_map($prov_ids, $service_id);
 
   // 3. Días libres
-  $daysoff_rows = $wpdb->get_results( $wpdb->prepare(
+  $daysoff_rows = $wpdb->get_results($wpdb->prepare(
     "SELECT userId, startDate, endDate
      FROM {$prefix}amelia_providers_to_daysoff
      WHERE userId IN ({$prov_in}) AND endDate >= %s",
     $start_date
-  ), ARRAY_A );
+  ), ARRAY_A);
 
   $daysoff = [];
-  foreach ( $daysoff_rows as $d ) {
-    $daysoff[ (int) $d['userId'] ][] = [ $d['startDate'], $d['endDate'] ];
+  foreach ($daysoff_rows as $d) {
+    $daysoff[(int) $d['userId']][] = [$d['startDate'], $d['endDate']];
   }
 
   // 4. Citas existentes (todos los servicios para evitar doble booking).
   // Amelia guarda el bloque horario en appointments y el estado real de la
   // reserva del paciente en customer_bookings.
-  $appts = $wpdb->get_results( $wpdb->prepare(
+  // NOTA: Expandimos el rango ±1 día porque Amelia guarda las fechas en UTC.
+  // Una cita a las 23:00 hora local puede ser las 05:00 UTC del día siguiente.
+  $query_start = date( 'Y-m-d', strtotime( $start_date . ' -1 day' ) ) . ' 00:00:00';
+  $query_end   = date( 'Y-m-d', strtotime( $end_date . ' +1 day' ) ) . ' 23:59:59';
+
+  $appts = $wpdb->get_results($wpdb->prepare(
     "SELECT DISTINCT
        a.providerId,
        a.bookingStart,
@@ -488,290 +473,313 @@ function vm_amelia_get_slots_data( $service_id, $provider_id = 0, $start_date = 
          cb.id IS NULL
          OR cb.status IN ('approved', 'pending')
        )",
-    $end_date . ' 23:59:59',
-    $start_date . ' 00:00:00'
-  ), ARRAY_A );
+    $query_end,
+    $query_start
+  ), ARRAY_A);
+
+  // Zona horaria local de WordPress para convertir citas de UTC a local.
+  // Amelia guarda bookingStart/bookingEnd en UTC en la DB, pero los horarios
+  // de los providers (schedule) están en hora local. Debemos convertir las
+  // citas a hora local antes de comparar.
+  $wp_tz = function_exists( 'wp_timezone' ) ? wp_timezone() : new \DateTimeZone( date_default_timezone_get() );
+  $utc_tz = new \DateTimeZone( 'UTC' );
 
   $appt_map = [];
-  foreach ( $appts as $a ) {
-    if ( empty( $a['bookingStart'] ) ) {
+  foreach ($appts as $a) {
+    if (empty($a['bookingStart'])) {
       continue;
     }
 
-    $pid      = (int) $a['providerId'];
-    $dk       = substr( $a['bookingStart'], 0, 10 );
-    $s_h      = (int) substr( $a['bookingStart'], 11, 2 );
-    $s_m      = (int) substr( $a['bookingStart'], 14, 2 );
-    $start_ts = strtotime( $a['bookingStart'] );
-    $end_ts   = ! empty( $a['bookingEnd'] ) ? strtotime( $a['bookingEnd'] ) : false;
+    $pid = (int) $a['providerId'];
 
-    if ( ! $start_ts ) {
+    // Convertir bookingStart de UTC a hora local de WordPress
+    $start_dt = new \DateTime( $a['bookingStart'], $utc_tz );
+    $start_dt->setTimezone( $wp_tz );
+    $dk   = $start_dt->format( 'Y-m-d' );
+    $s_h  = (int) $start_dt->format( 'H' );
+    $s_m  = (int) $start_dt->format( 'i' );
+
+    $start_ts = $start_dt->getTimestamp();
+
+    // Convertir bookingEnd de UTC a hora local
+    $end_ts = false;
+    if ( ! empty( $a['bookingEnd'] ) ) {
+      $end_dt = new \DateTime( $a['bookingEnd'], $utc_tz );
+      $end_dt->setTimezone( $wp_tz );
+      $end_ts = $end_dt->getTimestamp();
+    }
+
+    if (!$start_ts) {
       continue;
     }
 
-    if ( ! $end_ts || $end_ts <= $start_ts ) {
-      $booking_duration = ! empty( $a['bookingDuration'] ) ? (int) $a['bookingDuration'] : 0;
+    if (!$end_ts || $end_ts <= $start_ts) {
+      $booking_duration = !empty($a['bookingDuration']) ? (int) $a['bookingDuration'] : 0;
       $fallback_seconds = $booking_duration > 0 ? $booking_duration : (int) $duration;
-      $end_ts           = $start_ts + max( 60, $fallback_seconds );
+      $end_ts = $start_ts + max(60, $fallback_seconds);
     }
 
-    $duration_minutes = max( 1, (int) ceil( ( $end_ts - $start_ts ) / 60 ) );
-    $start_minutes    = $s_h * 60 + $s_m;
-    $end_minutes      = $start_minutes + $duration_minutes;
+    $duration_minutes = max(1, (int) ceil(($end_ts - $start_ts) / 60));
+    $start_minutes = $s_h * 60 + $s_m;
+    $end_minutes = $start_minutes + $duration_minutes;
 
-    $appt_map[ $pid ][ $dk ][] = [
+    $appt_map[$pid][$dk][] = [
       $start_minutes - $time_before_min,
       $end_minutes + $time_after_min,
     ];
   }
 
   // 5. Generar slots
-  $free         = [];
-  $occupied     = [];
+  $free = [];
+  $occupied = [];
   $provider_map = [];
 
-  $tz      = function_exists( 'wp_timezone' ) ? wp_timezone() : new \DateTimeZone( date_default_timezone_get() );
-  $current = new \DateTime( $start_date, $tz );
-  $end_dt  = new \DateTime( $end_date, $tz );
+  $tz = function_exists('wp_timezone') ? wp_timezone() : new \DateTimeZone(date_default_timezone_get());
+  $current = new \DateTime($start_date, $tz);
+  $end_dt = new \DateTime($end_date, $tz);
 
-  while ( $current <= $end_dt ) {
-    $dk       = $current->format( 'Y-m-d' );
-    $day_idx  = (int) $current->format( 'N' ); // 1=Lunes ... 7=Domingo
-    $is_today = ( $dk === $today_str );
+  while ($current <= $end_dt) {
+    $dk = $current->format('Y-m-d');
+    $day_idx = (int) $current->format('N'); // 1=Lunes ... 7=Domingo
+    $is_today = ($dk === $today_str);
 
-    $free_times    = [];
-    $occ_times     = [];
+    $free_times = [];
+    $occ_times = [];
     $prov_for_time = [];
 
-    foreach ( $prov_ids as $pid ) {
-      if ( isset( $daysoff[ $pid ] ) ) {
+    foreach ($prov_ids as $pid) {
+      if (isset($daysoff[$pid])) {
         $skip = false;
-        foreach ( $daysoff[ $pid ] as $off ) {
-          if ( $dk >= $off[0] && $dk <= $off[1] ) {
+        foreach ($daysoff[$pid] as $off) {
+          if ($dk >= $off[0] && $dk <= $off[1]) {
             $skip = true;
             break;
           }
         }
-        if ( $skip ) {
+        if ($skip) {
           continue;
         }
       }
 
-      if ( empty( $schedule[ $pid ][ $day_idx ] ) ) {
+      if (empty($schedule[$pid][$day_idx])) {
         continue;
       }
 
-      foreach ( $schedule[ $pid ][ $day_idx ] as $period ) {
-        $p_start = (int) substr( $period['start'], 0, 2 ) * 60 + (int) substr( $period['start'], 3, 2 );
-        $p_end   = (int) substr( $period['end'], 0, 2 ) * 60 + (int) substr( $period['end'], 3, 2 );
+      foreach ($schedule[$pid][$day_idx] as $period) {
+        $p_start = (int) substr($period['start'], 0, 2) * 60 + (int) substr($period['start'], 3, 2);
+        $p_end = (int) substr($period['end'], 0, 2) * 60 + (int) substr($period['end'], 3, 2);
 
-        for ( $t = $p_start; $t + $duration_min <= $p_end; $t += $duration_min ) {
-          if ( $is_today && $t <= $now_minutes ) {
+        for ($t = $p_start; $t + $duration_min <= $p_end; $t += $duration_min) {
+          if ($is_today && $t <= $now_minutes) {
             continue;
           }
 
-          $time_str = sprintf( '%02d:%02d', intval( $t / 60 ), $t % 60 );
+          $time_str = sprintf('%02d:%02d', intval($t / 60), $t % 60);
           $slot_end = $t + $duration_min;
 
           $conflict = false;
-          if ( isset( $appt_map[ $pid ][ $dk ] ) ) {
-            foreach ( $appt_map[ $pid ][ $dk ] as $ap ) {
-              if ( $t < $ap[1] && $slot_end > $ap[0] ) {
+          if (isset($appt_map[$pid][$dk])) {
+            foreach ($appt_map[$pid][$dk] as $ap) {
+              if ($t < $ap[1] && $slot_end > $ap[0]) {
                 $conflict = true;
                 break;
               }
             }
           }
 
-          if ( $conflict ) {
-            if ( ! in_array( $time_str, $occ_times, true ) ) {
+          if ($conflict) {
+            if (!in_array($time_str, $occ_times, true)) {
               $occ_times[] = $time_str;
             }
             continue;
           }
 
-          if ( ! in_array( $time_str, $free_times, true ) ) {
+          if (!in_array($time_str, $free_times, true)) {
             $free_times[] = $time_str;
           }
 
-          if ( $is_auto ) {
-            if ( ! isset( $prov_for_time[ $time_str ] ) ) {
-              $prov_for_time[ $time_str ] = [];
+          if ($is_auto) {
+            if (!isset($prov_for_time[$time_str])) {
+              $prov_for_time[$time_str] = [];
             }
-            $prov_for_time[ $time_str ][] = $pid;
+            $prov_for_time[$time_str][] = $pid;
           }
         }
       }
     }
 
-    $occ_times = array_values( array_diff( $occ_times, $free_times ) );
+    $occ_times = array_values(array_diff($occ_times, $free_times));
 
-    sort( $free_times );
-    sort( $occ_times );
+    sort($free_times);
+    sort($occ_times);
 
-    if ( ! empty( $free_times ) ) {
-      $free[ $dk ] = $free_times;
-      if ( $is_auto && ! empty( $prov_for_time ) ) {
-        $provider_map[ $dk ] = $prov_for_time;
+    if (!empty($free_times)) {
+      $free[$dk] = $free_times;
+      if ($is_auto && !empty($prov_for_time)) {
+        $provider_map[$dk] = $prov_for_time;
       }
     }
 
-    if ( ! empty( $occ_times ) ) {
-      $occupied[ $dk ] = $occ_times;
+    if (!empty($occ_times)) {
+      $occupied[$dk] = $occ_times;
     }
 
-    $current->modify( '+1 day' );
+    $current->modify('+1 day');
   }
 
   $response = [
-    'slots'    => ! empty( $free ) ? $free : (object) [],
-    'occupied' => ! empty( $occupied ) ? $occupied : (object) [],
+    'slots' => !empty($free) ? $free : (object) [],
+    'occupied' => !empty($occupied) ? $occupied : (object) [],
   ];
 
-  if ( $is_auto && ! empty( $provider_map ) ) {
+  if ($is_auto && !empty($provider_map)) {
     $response['providerMap'] = $provider_map;
   }
 
   return $response;
 }
 
-function vm_amelia_service_has_availability( $service_id, $provider_id = 0 ) {
-  if ( empty( $provider_id ) ) {
-    return ! empty( vm_amelia_get_available_provider_ids_for_service( $service_id ) );
+function vm_amelia_service_has_availability($service_id, $provider_id = 0)
+{
+  if (empty($provider_id)) {
+    return !empty(vm_amelia_get_available_provider_ids_for_service($service_id));
   }
 
-  [ $start_date, $end_date ] = vm_amelia_availability_window_dates();
+  [$start_date, $end_date] = vm_amelia_availability_window_dates();
 
-  $cache_key = 'vm_amelia_has_availability_v2_' . md5( wp_json_encode( [
-    'service'  => (int) $service_id,
+  $cache_key = 'vm_amelia_has_availability_v2_' . md5(wp_json_encode([
+    'service' => (int) $service_id,
     'provider' => (int) $provider_id,
-    'start'    => $start_date,
-    'end'      => $end_date,
-  ] ) );
-  $cached = get_transient( $cache_key );
-  if ( $cached !== false ) {
+    'start' => $start_date,
+    'end' => $end_date,
+  ]));
+  $cached = get_transient($cache_key);
+  if ($cached !== false) {
     return (bool) $cached;
   }
 
-  $slots = vm_amelia_get_slots_data( (int) $service_id, (int) $provider_id, $start_date, $end_date );
-  $has   = ! empty( (array) $slots['slots'] );
+  $slots = vm_amelia_get_slots_data((int) $service_id, (int) $provider_id, $start_date, $end_date);
+  $has = !empty((array) $slots['slots']);
 
-  set_transient( $cache_key, $has ? 1 : 0, 5 * MINUTE_IN_SECONDS );
+  set_transient($cache_key, $has ? 1 : 0, 5 * MINUTE_IN_SECONDS);
   return $has;
 }
 
-function vm_amelia_get_available_provider_ids_for_service( $service_id ) {
-  [ $start_date, $end_date ] = vm_amelia_availability_window_dates();
+function vm_amelia_get_available_provider_ids_for_service($service_id)
+{
+  [$start_date, $end_date] = vm_amelia_availability_window_dates();
 
-  $cache_key = 'vm_amelia_available_provider_ids_v2_' . md5( wp_json_encode( [
+  $cache_key = 'vm_amelia_available_provider_ids_v2_' . md5(wp_json_encode([
     'service' => (int) $service_id,
-    'start'   => $start_date,
-    'end'     => $end_date,
-  ] ) );
-  $cached = get_transient( $cache_key );
-  if ( $cached !== false ) {
-    return array_map( 'intval', (array) $cached );
+    'start' => $start_date,
+    'end' => $end_date,
+  ]));
+  $cached = get_transient($cache_key);
+  if ($cached !== false) {
+    return array_map('intval', (array) $cached);
   }
 
-  $slots        = vm_amelia_get_slots_data( (int) $service_id, 0, $start_date, $end_date );
+  $slots = vm_amelia_get_slots_data((int) $service_id, 0, $start_date, $end_date);
   $provider_ids = [];
 
-  if ( ! empty( $slots['providerMap'] ) && is_array( $slots['providerMap'] ) ) {
-    foreach ( $slots['providerMap'] as $times ) {
-      if ( ! is_array( $times ) ) {
+  if (!empty($slots['providerMap']) && is_array($slots['providerMap'])) {
+    foreach ($slots['providerMap'] as $times) {
+      if (!is_array($times)) {
         continue;
       }
-      foreach ( $times as $ids ) {
-        if ( ! is_array( $ids ) ) {
+      foreach ($times as $ids) {
+        if (!is_array($ids)) {
           continue;
         }
-        foreach ( $ids as $id ) {
+        foreach ($ids as $id) {
           $provider_ids[] = (int) $id;
         }
       }
     }
   }
 
-  $provider_ids = array_values( array_unique( $provider_ids ) );
-  set_transient( $cache_key, $provider_ids, 5 * MINUTE_IN_SECONDS );
+  $provider_ids = array_values(array_unique($provider_ids));
+  set_transient($cache_key, $provider_ids, 5 * MINUTE_IN_SECONDS);
 
   return $provider_ids;
 }
 
-function vm_amelia_get_booking_slot_parts( $booking_data ) {
-  $service_id    = isset( $booking_data['serviceId'] ) ? (int) $booking_data['serviceId'] : 0;
-  $provider_id   = isset( $booking_data['providerId'] ) ? (int) $booking_data['providerId'] : 0;
-  $booking_start = isset( $booking_data['bookingStart'] ) ? (string) $booking_data['bookingStart'] : '';
-  $date          = substr( $booking_start, 0, 10 );
-  $time          = substr( $booking_start, 11, 5 );
-  $duration      = 0;
+function vm_amelia_get_booking_slot_parts($booking_data)
+{
+  $service_id = isset($booking_data['serviceId']) ? (int) $booking_data['serviceId'] : 0;
+  $provider_id = isset($booking_data['providerId']) ? (int) $booking_data['providerId'] : 0;
+  $booking_start = isset($booking_data['bookingStart']) ? (string) $booking_data['bookingStart'] : '';
+  $date = substr($booking_start, 0, 10);
+  $time = substr($booking_start, 11, 5);
+  $duration = 0;
 
-  if ( ! empty( $booking_data['bookings'][0]['duration'] ) ) {
+  if (!empty($booking_data['bookings'][0]['duration'])) {
     $duration = (int) $booking_data['bookings'][0]['duration'];
   }
 
   return [
-    'serviceId'  => $service_id,
+    'serviceId' => $service_id,
     'providerId' => $provider_id,
-    'date'       => $date,
-    'time'       => $time,
-    'duration'   => $duration,
+    'date' => $date,
+    'time' => $time,
+    'duration' => $duration,
   ];
 }
 
-function vm_amelia_validate_booking_slot( $booking_data, $doctor_mode = 'manual' ) {
-  if ( empty( $booking_data ) || ! is_array( $booking_data ) ) {
-    return [ 'success' => false, 'message' => 'Payload de Amelia inválido' ];
+function vm_amelia_validate_booking_slot($booking_data, $doctor_mode = 'manual')
+{
+  if (empty($booking_data) || !is_array($booking_data)) {
+    return ['success' => false, 'message' => 'Payload de Amelia inválido'];
   }
 
-  $parts       = vm_amelia_get_booking_slot_parts( $booking_data );
-  $service_id  = $parts['serviceId'];
+  $parts = vm_amelia_get_booking_slot_parts($booking_data);
+  $service_id = $parts['serviceId'];
   $provider_id = $parts['providerId'];
-  $date        = $parts['date'];
-  $time        = $parts['time'];
-  $duration    = $parts['duration'];
-  $is_auto     = ( $doctor_mode === 'auto' );
+  $date = $parts['date'];
+  $time = $parts['time'];
+  $duration = $parts['duration'];
+  $is_auto = ($doctor_mode === 'auto');
 
-  if ( ! $service_id || ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date ) || ! preg_match( '/^\d{2}:\d{2}$/', $time ) ) {
-    return [ 'success' => false, 'message' => 'Horario de consulta inválido' ];
+  if (!$service_id || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) || !preg_match('/^\d{2}:\d{2}$/', $time)) {
+    return ['success' => false, 'message' => 'Horario de consulta inválido'];
   }
 
-  if ( $is_auto ) {
-    $availability = vm_amelia_get_slots_data( $service_id, 0, $date, $date, $duration );
-    $provider_map = isset( $availability['providerMap'] ) && is_array( $availability['providerMap'] )
+  if ($is_auto) {
+    $availability = vm_amelia_get_slots_data($service_id, 0, $date, $date, $duration);
+    $provider_map = isset($availability['providerMap']) && is_array($availability['providerMap'])
       ? $availability['providerMap']
       : [];
-    $providers    = isset( $provider_map[ $date ][ $time ] ) ? $provider_map[ $date ][ $time ] : [];
-    $providers    = is_array( $providers ) ? array_map( 'intval', $providers ) : [];
+    $providers = isset($provider_map[$date][$time]) ? $provider_map[$date][$time] : [];
+    $providers = is_array($providers) ? array_map('intval', $providers) : [];
 
-    if ( empty( $providers ) ) {
-      return [ 'success' => false, 'message' => 'El horario seleccionado ya no está disponible' ];
+    if (empty($providers)) {
+      return ['success' => false, 'message' => 'El horario seleccionado ya no está disponible'];
     }
 
-    if ( $provider_id > 0 && in_array( $provider_id, $providers, true ) ) {
-      return [ 'success' => true, 'booking_data' => $booking_data ];
+    if ($provider_id > 0 && in_array($provider_id, $providers, true)) {
+      return ['success' => true, 'booking_data' => $booking_data];
     }
 
     $booking_data['providerId'] = (int) $providers[0];
 
-    return [ 'success' => true, 'booking_data' => $booking_data ];
+    return ['success' => true, 'booking_data' => $booking_data];
   }
 
-  if ( ! $provider_id ) {
-    return [ 'success' => false, 'message' => 'Selecciona un doctor para validar el horario' ];
+  if (!$provider_id) {
+    return ['success' => false, 'message' => 'Selecciona un doctor para validar el horario'];
   }
 
-  $availability = vm_amelia_get_slots_data( $service_id, $provider_id, $date, $date, $duration );
-  $slot_map     = isset( $availability['slots'] ) && is_array( $availability['slots'] )
+  $availability = vm_amelia_get_slots_data($service_id, $provider_id, $date, $date, $duration);
+  $slot_map = isset($availability['slots']) && is_array($availability['slots'])
     ? $availability['slots']
     : [];
-  $slots        = isset( $slot_map[ $date ] ) ? $slot_map[ $date ] : [];
+  $slots = isset($slot_map[$date]) ? $slot_map[$date] : [];
 
-  if ( ! is_array( $slots ) || ! in_array( $time, $slots, true ) ) {
-    return [ 'success' => false, 'message' => 'El horario seleccionado ya no está disponible' ];
+  if (!is_array($slots) || !in_array($time, $slots, true)) {
+    return ['success' => false, 'message' => 'El horario seleccionado ya no está disponible'];
   }
 
-  return [ 'success' => true, 'booking_data' => $booking_data ];
+  return ['success' => true, 'booking_data' => $booking_data];
 }
 
 /**
@@ -779,33 +787,34 @@ function vm_amelia_validate_booking_slot( $booking_data, $doctor_mode = 'manual'
  * Params GET: serviceId (requerido), date (YYYY-MM-DD), providerId, duration
  * Retorna: { slots: { "2026-03-10": ["09:00",...] }, occupied: {...}, providerMap: {...} }
  */
-function vm_amelia_get_slots_handler() {
-  $service_id  = isset( $_GET['serviceId'] ) ? (int) $_GET['serviceId'] : 0;
-  $provider_id = isset( $_GET['providerId'] ) ? (int) $_GET['providerId'] : 0;
-  $date        = isset( $_GET['date'] ) ? sanitize_text_field( $_GET['date'] ) : '';
-  $end_date    = isset( $_GET['endDate'] ) ? sanitize_text_field( $_GET['endDate'] ) : '';
-  $duration    = isset( $_GET['duration'] ) ? (int) $_GET['duration'] : 0;
+function vm_amelia_get_slots_handler()
+{
+  $service_id = isset($_GET['serviceId']) ? (int) $_GET['serviceId'] : 0;
+  $provider_id = isset($_GET['providerId']) ? (int) $_GET['providerId'] : 0;
+  $date = isset($_GET['date']) ? sanitize_text_field($_GET['date']) : '';
+  $end_date = isset($_GET['endDate']) ? sanitize_text_field($_GET['endDate']) : '';
+  $duration = isset($_GET['duration']) ? (int) $_GET['duration'] : 0;
 
-  if ( ! $service_id ) {
-    wp_send_json_error( [ 'message' => 'serviceId es requerido' ] );
+  if (!$service_id) {
+    wp_send_json_error(['message' => 'serviceId es requerido']);
     return;
   }
 
   // Rango de fechas
-  if ( $date ) {
+  if ($date) {
     $start_date = $date;
-    if ( empty( $end_date ) ) {
-      $end_date = date( 'Y-m-t', strtotime( $date ) );
+    if (empty($end_date)) {
+      $end_date = date('Y-m-t', strtotime($date));
     }
   } else {
-    $start_date = current_time( 'Y-m-d' );
-    if ( empty( $end_date ) ) {
-      $end_date = date( 'Y-m-t', current_time( 'timestamp' ) );
+    $start_date = current_time('Y-m-d');
+    if (empty($end_date)) {
+      $end_date = date('Y-m-t', current_time('timestamp'));
     }
   }
 
-  $response = vm_amelia_get_slots_data( $service_id, $provider_id, $start_date, $end_date, $duration );
+  $response = vm_amelia_get_slots_data($service_id, $provider_id, $start_date, $end_date, $duration);
 
   nocache_headers();
-  wp_send_json_success( $response );
+  wp_send_json_success($response);
 }
