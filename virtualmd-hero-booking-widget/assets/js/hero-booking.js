@@ -18,8 +18,8 @@
       var successText = document.getElementById('vmSpeedSuccessText');
 
       if (stripeFlow === 'package') {
-        if (successTitle) successTitle.textContent = '¡Paquete comprado correctamente!';
-        if (successText) successText.textContent = 'Tu pago fue procesado correctamente y el paquete quedó registrado en Amelia. Podrás agendar sus consultas incluidas desde tu cuenta.';
+        if (successTitle) successTitle.textContent = 'Procesando compra...';
+        if (successText) successText.textContent = 'Estamos confirmando tu pago y registrando el paquete en Amelia.';
       }
 
       // Mostrar el stage de success directamente
@@ -41,12 +41,24 @@
         .then(function (res) { return res.json(); })
         .then(function (res) {
           if (res.success && res.data && res.data.status === 'complete') {
+            if (stripeFlow === 'package') {
+              if (successTitle) successTitle.textContent = '¡Paquete comprado correctamente!';
+              if (successText) successText.textContent = 'Tu pago fue procesado correctamente y el paquete quedó registrado en Amelia. Recibirás la confirmación en tu correo.';
+            }
             console.log('[VM Stripe] Pago verificado exitosamente desde return URL');
           } else {
+            if (stripeFlow === 'package') {
+              if (successTitle) successTitle.textContent = 'Pago recibido, paquete pendiente';
+              if (successText) successText.textContent = (res.data && res.data.message) ? res.data.message : 'No pudimos registrar el paquete automáticamente. Escríbenos con tu comprobante para completarlo.';
+            }
             console.warn('[VM Stripe] Estado de pago:', res);
           }
         })
         .catch(function (err) {
+          if (stripeFlow === 'package') {
+            if (successTitle) successTitle.textContent = 'Pago recibido, paquete pendiente';
+            if (successText) successText.textContent = 'No pudimos verificar el paquete automáticamente. Escríbenos con tu comprobante para completarlo.';
+          }
           console.error('[VM Stripe] Error al verificar pago:', err);
         });
 
@@ -66,7 +78,6 @@
     var packagePanel = document.getElementById('vmSpeedPackagePanel');
     var packageGrid = document.getElementById('vmSpeedPackageGrid');
     var packageEmpty = document.getElementById('vmSpeedPackageEmpty');
-    var packageCta = document.getElementById('vmSpeedPackageCta');
     var doctorModeButtons = document.querySelectorAll('.vm-speed-doctor-mode');
     var heroShell = document.querySelector('.vm-speed-hero-shell');
     var heroStages = document.getElementById('vmSpeedHeroStages');
@@ -89,10 +100,22 @@
     var paymentSumServiceLabel = document.getElementById('vmPaymentSummaryServiceLabel');
     var paymentSumDateLabel = document.getElementById('vmPaymentSummaryDateLabel');
     var paymentSumDoctorLabel = document.getElementById('vmPaymentSummaryDoctorLabel');
+    var paymentSubtotalRow = document.getElementById('vmPaymentSubtotalRow');
+    var paymentSumSubtotalLabel = document.getElementById('vmPaymentSummarySubtotalLabel');
     var paymentSumService = document.getElementById('vmPaymentSummaryService');
     var paymentSumDate = document.getElementById('vmPaymentSummaryDate');
     var paymentSumDoctor = document.getElementById('vmPaymentSummaryDoctor');
+    var paymentSumSubtotal = document.getElementById('vmPaymentSummarySubtotal');
     var paymentSumTotal = document.getElementById('vmPaymentSummaryTotal');
+    var paymentPackageDiscountRow = document.getElementById('vmPaymentPackageDiscountRow');
+    var paymentPackageDiscount = document.getElementById('vmPaymentPackageDiscount');
+    var paymentCouponDiscountRow = document.getElementById('vmPaymentCouponDiscountRow');
+    var paymentCouponDiscount = document.getElementById('vmPaymentCouponDiscount');
+    var packageCouponPanel = document.getElementById('vmSpeedPackageCouponPanel');
+    var packageCouponInput = document.getElementById('vmSpeedPackageCouponInput');
+    var packageCouponApply = document.getElementById('vmSpeedPackageCouponApply');
+    var packageCouponMessage = document.getElementById('vmSpeedPackageCouponMessage');
+    var freePackageCheckoutBtn = document.getElementById('vmSpeedFreePackageCheckout');
     var successTitleEl = document.getElementById('vmSpeedSuccessTitle');
     var successTextEl = document.getElementById('vmSpeedSuccessText');
 
@@ -102,6 +125,11 @@
     var currentSessionId = null;
     var pendingBookingPayload = null;
     var pendingPackageCustomer = null;
+    var pendingPackageCoupon = null;
+    var pendingPackagePricing = null;
+    var pendingPackageAttemptId = null;
+    var packageStripeRequestId = 0;
+    var packageContentModal = null;
 
     var intakeName = document.getElementById('vmSpeedIntakeName');
     var intakePhoneCountry = document.getElementById('vmSpeedIntakePhoneCountry');
@@ -323,8 +351,154 @@
       return lines.length ? lines.join(' · ') : 'Servicios incluidos en el paquete';
     }
 
+    function packageContentListHTML(pkg) {
+      var lines = getPackageIncludedLines(pkg);
+
+      if (!lines.length) {
+        return '<p class="vm-speed-package-modal__empty">El contenido se tomará de la configuración del paquete en Amelia.</p>';
+      }
+
+      return '<ul class="vm-speed-package-modal__list">' + lines.map(function (line) {
+        return '<li>' + escapeHTML(line) + '</li>';
+      }).join('') + '</ul>';
+    }
+
+    function ensurePackageContentModal() {
+      if (packageContentModal) {
+        return packageContentModal;
+      }
+
+      packageContentModal = document.createElement('div');
+      packageContentModal.className = 'vm-speed-package-modal';
+      packageContentModal.setAttribute('aria-hidden', 'true');
+      packageContentModal.innerHTML =
+        '<div class="vm-speed-package-modal__overlay" data-package-modal-close></div>' +
+        '<div class="vm-speed-package-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="vmPackageModalTitle">' +
+          '<button type="button" class="vm-speed-package-modal__close" data-package-modal-close aria-label="Cerrar contenido">×</button>' +
+          '<span class="vm-speed-package-modal__eyebrow">Contenido del paquete</span>' +
+          '<h3 class="vm-speed-package-modal__title" id="vmPackageModalTitle"></h3>' +
+          '<p class="vm-speed-package-modal__description"></p>' +
+          '<div class="vm-speed-package-modal__content"></div>' +
+        '</div>';
+
+      document.body.appendChild(packageContentModal);
+
+      packageContentModal.addEventListener('click', function (event) {
+        if (event.target.closest('[data-package-modal-close]')) {
+          closePackageContentModal();
+        }
+      });
+
+      document.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape' && packageContentModal && packageContentModal.classList.contains('is-open')) {
+          closePackageContentModal();
+        }
+      });
+
+      return packageContentModal;
+    }
+
+    function openPackageContentModal(pkg) {
+      if (!pkg) {
+        return;
+      }
+
+      var modal = ensurePackageContentModal();
+      var title = modal.querySelector('.vm-speed-package-modal__title');
+      var description = modal.querySelector('.vm-speed-package-modal__description');
+      var content = modal.querySelector('.vm-speed-package-modal__content');
+
+      if (title) title.textContent = pkg.name || 'Paquete VirtualMD';
+      if (description) {
+        description.textContent = pkg.description || 'Estas son las consultas incluidas en este paquete.';
+        description.hidden = !description.textContent;
+      }
+      if (content) content.innerHTML = packageContentListHTML(pkg);
+
+      modal.classList.add('is-open');
+      modal.setAttribute('aria-hidden', 'false');
+      document.documentElement.classList.add('vm-speed-modal-open');
+    }
+
+    function closePackageContentModal() {
+      if (!packageContentModal) {
+        return;
+      }
+
+      packageContentModal.classList.remove('is-open');
+      packageContentModal.setAttribute('aria-hidden', 'true');
+      document.documentElement.classList.remove('vm-speed-modal-open');
+    }
+
     function getPackagePrice(pkg) {
       return pkg && pkg.price ? Number(pkg.price) : 0;
+    }
+
+    function getPackageBasePrice(pkg) {
+      return pkg && pkg.basePrice ? Number(pkg.basePrice) : getPackagePrice(pkg);
+    }
+
+    function getPackagePricing() {
+      if (pendingPackagePricing) {
+        return pendingPackagePricing;
+      }
+
+      if (!selectedPackage) {
+        return null;
+      }
+
+      return {
+        basePrice: getPackageBasePrice(selectedPackage),
+        packageDiscountPercent: Number(selectedPackage.packageDiscountPercent || 0),
+        packageDiscountAmount: Number(selectedPackage.packageDiscountAmount || 0),
+        subtotal: getPackagePrice(selectedPackage),
+        coupon: null,
+        couponId: 0,
+        couponCode: '',
+        couponDiscountAmount: 0,
+        total: getPackagePrice(selectedPackage)
+      };
+    }
+
+    function getAppointmentPricing() {
+      if (pendingPackagePricing) {
+        return pendingPackagePricing;
+      }
+
+      if (!selectedService) {
+        return null;
+      }
+
+      var basePrice = Number(selectedService.price || 0);
+      return {
+        basePrice: basePrice,
+        packageDiscountPercent: 0,
+        packageDiscountAmount: 0,
+        subtotal: basePrice,
+        coupon: null,
+        couponId: 0,
+        couponCode: '',
+        couponDiscountAmount: 0,
+        total: basePrice
+      };
+    }
+
+    function getActivePricing() {
+      return activeBookingFlow === 'package' ? getPackagePricing() : getAppointmentPricing();
+    }
+
+    function resetPackageCouponState() {
+      pendingPackageCoupon = null;
+      pendingPackagePricing = null;
+      if (packageCouponInput) packageCouponInput.value = '';
+      if (packageCouponMessage) {
+        packageCouponMessage.textContent = '';
+        packageCouponMessage.classList.remove('is-error', 'is-success');
+      }
+    }
+
+    function makePackageAttemptId() {
+      return 'pkg_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
     }
 
     function setSuccessCopy(flow) {
@@ -558,40 +732,88 @@
 
       packageData.forEach(function (pkg) {
         var isActive = selectedPackage && parseInt(selectedPackage.id, 10) === parseInt(pkg.id, 10);
-        var card = document.createElement('button');
-        card.type = 'button';
+        var card = document.createElement('article');
         card.className = 'vm-speed-package-card' + (isActive ? ' is-active' : '');
+        card.setAttribute('role', 'button');
+        card.setAttribute('tabindex', '0');
         card.setAttribute('aria-pressed', isActive ? 'true' : 'false');
 
-        var image = pkg.thumb || pkg.image || '';
         var includedLines = getPackageIncludedLines(pkg);
-        var serviceHtml = includedLines.slice(0, 3).map(function (line) {
-          return '<li>' + escapeHTML(line) + '</li>';
-        }).join('');
-
-        if (includedLines.length > 3) {
-          serviceHtml += '<li>+' + (includedLines.length - 3) + ' servicios más</li>';
-        }
+        var basePrice = getPackageBasePrice(pkg);
+        var finalPrice = getPackagePrice(pkg);
+        var packageDiscountPercent = Number(pkg.packageDiscountPercent || 0);
+        var priceHtml = packageDiscountPercent > 0 && basePrice > finalPrice
+          ? '<span class="vm-speed-package-card__price-old">' + formatPrice(basePrice) + '</span>' +
+            '<span class="vm-speed-package-card__price-discount">-' + packageDiscountPercent.toFixed(packageDiscountPercent % 1 === 0 ? 0 : 1) + '%</span>' +
+            '<span class="vm-speed-package-card__price-final">' + formatPrice(finalPrice) + '</span>'
+          : '<span class="vm-speed-package-card__price-final">' + formatPrice(finalPrice) + '</span>';
+        var discountLabel = packageDiscountPercent > 0
+          ? packageDiscountPercent.toFixed(packageDiscountPercent % 1 === 0 ? 0 : 1) + '% Descuento'
+          : 'Paquete VirtualMD';
+        var packageDescription = pkg.description || 'Paquete de consultas VirtualMD';
 
         card.innerHTML =
-          '<span class="vm-speed-package-card__media">' +
-            (image ? '<img src="' + escapeHTML(image) + '" alt="">' : '<span class="vm-speed-package-card__placeholder">+</span>') +
+          '<span class="vm-speed-package-card__header">' +
+            '<span class="vm-speed-package-card__title">' + escapeHTML(pkg.name || 'Paquete VirtualMD') + '</span>' +
+            '<span class="vm-speed-package-card__badge">' + escapeHTML(discountLabel) + '</span>' +
           '</span>' +
           '<span class="vm-speed-package-card__body">' +
-            '<span class="vm-speed-package-card__eyebrow">Paquete</span>' +
-            '<span class="vm-speed-package-card__title">' + escapeHTML(pkg.name || 'Paquete VirtualMD') + '</span>' +
-            (pkg.description ? '<span class="vm-speed-package-card__description">' + escapeHTML(pkg.description) + '</span>' : '') +
+            '<span class="vm-speed-package-card__description">' + escapeHTML(packageDescription) + '</span>' +
+            '<span class="vm-speed-package-card__price">' + priceHtml + '</span>' +
             '<span class="vm-speed-package-card__validity">' + escapeHTML(pkg.validityLabel || 'Vigencia según configuración de Amelia') + '</span>' +
-            (serviceHtml ? '<ul class="vm-speed-package-card__services">' + serviceHtml + '</ul>' : '') +
+            '<button type="button" class="vm-speed-package-card__details-toggle">Ver contenido del paquete</button>' +
           '</span>' +
-          '<span class="vm-speed-package-card__price">' + formatPrice(getPackagePrice(pkg)) + '</span>';
+          '<span class="vm-speed-package-card__footer">' +
+            '<button type="button" class="vm-speed-package-card__cta">Adquirir paquete</button>' +
+          '</span>';
 
-        card.addEventListener('click', function () {
+        function selectPackage() {
           selectedPackage = pkg;
+          pendingPackageAttemptId = null;
+          resetPackageCouponState();
           renderPackageCards();
           updateIntakeSummary();
           updatePaymentSummary();
+        }
+
+        card.addEventListener('click', function (event) {
+          if (event.target.closest('.vm-speed-package-card__details-toggle')) {
+            return;
+          }
+          if (event.target.closest('.vm-speed-package-card__cta')) {
+            return;
+          }
+          selectPackage();
         });
+
+        card.addEventListener('keydown', function (event) {
+          if (event.target.closest('button')) {
+            return;
+          }
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            selectPackage();
+          }
+        });
+
+        var detailsToggle = card.querySelector('.vm-speed-package-card__details-toggle');
+        if (detailsToggle) {
+          detailsToggle.addEventListener('click', function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            openPackageContentModal(pkg);
+          });
+        }
+
+        var acquireButton = card.querySelector('.vm-speed-package-card__cta');
+        if (acquireButton) {
+          acquireButton.addEventListener('click', function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            selectPackage();
+            showIntakeStep();
+          });
+        }
 
         packageGrid.appendChild(card);
       });
@@ -823,7 +1045,9 @@
         svcEl.textContent = selectedPackage
           ? selectedPackage.name + ' (' + formatPrice(getPackagePrice(selectedPackage)) + ')'
           : 'Selecciona un paquete';
-        dateEl.textContent = selectedPackage ? getPackageIncludedText(selectedPackage) : '—';
+        dateEl.innerHTML = selectedPackage
+          ? '<button type="button" class="vm-speed-summary-package-content">Ver contenido del paquete</button>'
+          : '—';
         docEl.textContent = 'Agenda las consultas incluidas después de comprar';
         docEl.classList.remove('vm-speed-intake-summary__value--doctor');
         docEl.removeAttribute('role');
@@ -1090,21 +1314,51 @@
 
     function updatePaymentSummary() {
       if (activeBookingFlow === 'package') {
+        var pricing = getPackagePricing();
         if (paymentIntro) paymentIntro.textContent = 'Tu paquete se registrará en Amelia automáticamente al procesar el pago de forma segura.';
         if (paymentSumServiceLabel) paymentSumServiceLabel.textContent = 'Paquete';
         if (paymentSumDateLabel) paymentSumDateLabel.textContent = 'Incluye';
         if (paymentSumDoctorLabel) paymentSumDoctorLabel.textContent = 'Uso';
+        if (paymentSubtotalRow) paymentSubtotalRow.hidden = false;
+        if (paymentSumSubtotalLabel) paymentSumSubtotalLabel.textContent = 'Subtotal';
         if (paymentSumService) paymentSumService.textContent = selectedPackage ? selectedPackage.name : '—';
         if (paymentSumDate) paymentSumDate.textContent = selectedPackage ? getPackageIncludedText(selectedPackage) : '—';
         if (paymentSumDoctor) paymentSumDoctor.textContent = 'Consultas para agendar después de la compra';
-        if (paymentSumTotal) paymentSumTotal.textContent = selectedPackage ? formatPrice(getPackagePrice(selectedPackage)) + ' MXN' : '—';
+        if (paymentSumSubtotal) paymentSumSubtotal.textContent = pricing ? formatPrice(pricing.basePrice) + ' MXN' : '—';
+        if (paymentPackageDiscountRow) paymentPackageDiscountRow.hidden = !(pricing && Number(pricing.packageDiscountAmount) > 0);
+        if (paymentPackageDiscount) {
+          var pct = pricing ? Number(pricing.packageDiscountPercent || 0) : 0;
+          paymentPackageDiscount.textContent = pricing && Number(pricing.packageDiscountAmount) > 0
+            ? '-' + formatPrice(pricing.packageDiscountAmount) + (pct ? ' (' + pct.toFixed(pct % 1 === 0 ? 0 : 1) + '%)' : '')
+            : '—';
+        }
+        if (paymentCouponDiscountRow) paymentCouponDiscountRow.hidden = !(pricing && Number(pricing.couponDiscountAmount) > 0);
+        if (paymentCouponDiscount) {
+          paymentCouponDiscount.textContent = pricing && Number(pricing.couponDiscountAmount) > 0
+            ? '-' + formatPrice(pricing.couponDiscountAmount) + (pricing.couponCode ? ' · ' + pricing.couponCode : '')
+            : '—';
+        }
+        if (paymentSumTotal) paymentSumTotal.textContent = pricing ? formatPrice(pricing.total) + ' MXN' : '—';
+        if (packageCouponPanel) packageCouponPanel.hidden = false;
+        syncPackagePaymentControls();
         return;
       }
 
       if (paymentIntro) paymentIntro.textContent = 'Tu cita se confirmará automáticamente al procesar el pago de forma segura.';
+      var appointmentPricing = getAppointmentPricing();
       if (paymentSumServiceLabel) paymentSumServiceLabel.textContent = 'Consulta';
       if (paymentSumDateLabel) paymentSumDateLabel.textContent = 'Fecha';
       if (paymentSumDoctorLabel) paymentSumDoctorLabel.textContent = 'Especialista';
+      if (paymentSubtotalRow) paymentSubtotalRow.hidden = !(appointmentPricing && Number(appointmentPricing.couponDiscountAmount) > 0);
+      if (paymentSumSubtotalLabel) paymentSumSubtotalLabel.textContent = 'Subtotal';
+      if (paymentPackageDiscountRow) paymentPackageDiscountRow.hidden = true;
+      if (paymentCouponDiscountRow) paymentCouponDiscountRow.hidden = !(appointmentPricing && Number(appointmentPricing.couponDiscountAmount) > 0);
+      if (paymentCouponDiscount) {
+        paymentCouponDiscount.textContent = appointmentPricing && Number(appointmentPricing.couponDiscountAmount) > 0
+          ? '-' + formatPrice(appointmentPricing.couponDiscountAmount) + (appointmentPricing.couponCode ? ' · ' + appointmentPricing.couponCode : '')
+          : '—';
+      }
+      if (packageCouponPanel) packageCouponPanel.hidden = false;
       if (paymentSumService && selectedService) {
         paymentSumService.textContent = selectedService.category + ' — ' + selectedService.type;
       }
@@ -1115,9 +1369,13 @@
       if (paymentSumDoctor) {
         paymentSumDoctor.textContent = selectedDoctor && selectedDoctor.name ? selectedDoctor.name : 'Por asignar';
       }
-      if (paymentSumTotal && selectedService) {
-        paymentSumTotal.textContent = formatPrice(selectedService.price) + ' MXN';
+      if (paymentSumSubtotal && selectedService) {
+        paymentSumSubtotal.textContent = formatPrice(selectedService.price) + ' MXN';
       }
+      if (paymentSumTotal && selectedService) {
+        paymentSumTotal.textContent = appointmentPricing ? formatPrice(appointmentPricing.total) + ' MXN' : formatPrice(selectedService.price) + ' MXN';
+      }
+      syncPackagePaymentControls();
     }
 
     function initStripeCheckout(clientSecret) {
@@ -1188,6 +1446,9 @@
         if (paypalWrap) paypalWrap.classList.remove('is-active');
         if (payMethodStripeBtn) payMethodStripeBtn.classList.add('is-active');
         if (payMethodPayPalBtn) payMethodPayPalBtn.classList.remove('is-active');
+        if (activeBookingFlow === 'package' && paymentStage && paymentStage.classList.contains('is-active')) {
+          createPackageStripeSession();
+        }
       } else {
         if (stripeWrap) stripeWrap.style.display = 'none';
         if (paypalWrap) paypalWrap.classList.add('is-active');
@@ -1204,6 +1465,349 @@
     }
     if (payMethodPayPalBtn) {
       payMethodPayPalBtn.addEventListener('click', function() { switchPaymentMethod('paypal'); });
+    }
+
+    function destroyStripeCheckout() {
+      if (stripeCheckoutInstance) {
+        stripeCheckoutInstance.destroy();
+        stripeCheckoutInstance = null;
+      }
+      if (stripeCheckoutEl) {
+        stripeCheckoutEl.innerHTML = '';
+      }
+    }
+
+    function syncPackagePaymentControls() {
+      if (activeBookingFlow !== 'package' && activeBookingFlow !== 'appointment') {
+        return;
+      }
+
+      var pricing = getActivePricing();
+      var isFree = pricing && Number(pricing.total) <= 0;
+
+      if (freePackageCheckoutBtn) {
+        freePackageCheckoutBtn.hidden = !isFree;
+        freePackageCheckoutBtn.textContent = activeBookingFlow === 'package'
+          ? 'Completar compra sin pago'
+          : 'Confirmar consulta sin pago';
+      }
+      if (payMethodStripeBtn && payMethodPayPalBtn) {
+        var methodsWrap = payMethodStripeBtn.parentElement;
+        if (methodsWrap) methodsWrap.style.display = isFree ? 'none' : '';
+      }
+
+      if (isFree) {
+        destroyStripeCheckout();
+        if (stripeWrap) stripeWrap.style.display = 'none';
+        if (paypalWrap) paypalWrap.classList.remove('is-active');
+      } else if (payMethodStripeBtn && payMethodStripeBtn.classList.contains('is-active')) {
+        if (stripeWrap) stripeWrap.style.display = '';
+      }
+    }
+
+    function createPackageStripeSession() {
+      if (activeBookingFlow !== 'package' || !selectedPackage || !pendingPackageCustomer) {
+        return Promise.resolve(null);
+      }
+
+      var pricing = getPackagePricing();
+      syncPackagePaymentControls();
+
+      if (pricing && Number(pricing.total) <= 0) {
+        packageStripeRequestId++;
+        destroyStripeCheckout();
+        return Promise.resolve(null);
+      }
+
+      var requestId = ++packageStripeRequestId;
+      destroyStripeCheckout();
+      if (stripeLoadingEl) stripeLoadingEl.style.display = 'flex';
+      if (stripeErrorEl) stripeErrorEl.classList.remove('is-visible');
+
+      var packageCreateUrl = VM_AJAX_URL + (VM_AJAX_URL.indexOf('?') !== -1 ? '&' : '?') + 'action=' + vmhbAction('stripeCreatePackageSession', 'vmhb_stripe_create_package_session');
+
+      return fetch(packageCreateUrl, {
+        method: 'POST',
+        body: JSON.stringify({
+          packageId: selectedPackage.id,
+          customerData: pendingPackageCustomer,
+          couponCode: pendingPackageCoupon ? pendingPackageCoupon.code : '',
+          pageUrl: window.location.href
+        }),
+        headers: { 'Content-Type': 'application/json' }
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (res) {
+          if (requestId !== packageStripeRequestId) {
+            return null;
+          }
+
+          if (res.success && res.data && res.data.clientSecret) {
+            currentSessionId = res.data.sessionId;
+            initStripeCheckout(res.data.clientSecret);
+            return res.data;
+          }
+
+          var errMsg = (res.data && res.data.message) ? res.data.message : 'Error al crear la sesión de pago.';
+          showStripeError(errMsg);
+          throw new Error(errMsg);
+        })
+        .catch(function (err) {
+          if (requestId === packageStripeRequestId) {
+            console.error('[VM Stripe Package] Fetch error:', err);
+            showStripeError(err.message || 'Ocurrió un error de conexión. Intenta de nuevo.');
+          }
+          return null;
+        });
+    }
+
+    function createAppointmentStripeSession(shouldMount) {
+      if (activeBookingFlow !== 'appointment' || !selectedService || !pendingBookingPayload) {
+        return Promise.resolve(null);
+      }
+
+      var pricing = getAppointmentPricing();
+      syncPackagePaymentControls();
+
+      if (pricing && Number(pricing.total) <= 0) {
+        packageStripeRequestId++;
+        destroyStripeCheckout();
+        return Promise.resolve(null);
+      }
+
+      var requestId = ++packageStripeRequestId;
+      destroyStripeCheckout();
+      if (stripeLoadingEl) stripeLoadingEl.style.display = 'flex';
+      if (stripeErrorEl) stripeErrorEl.classList.remove('is-visible');
+
+      var createUrl = VM_AJAX_URL + (VM_AJAX_URL.indexOf('?') !== -1 ? '&' : '?') + 'action=' + vmhbAction('stripeCreateSession', 'vm_stripe_create_session');
+      var serviceName = selectedService.category + ' - ' + selectedService.type;
+
+      return fetch(createUrl, {
+        method: 'POST',
+        body: JSON.stringify({
+          serviceName: serviceName,
+          serviceId: selectedService.id,
+          servicePrice: selectedService.price,
+          customerEmail: getAppointmentCustomerEmail(),
+          bookingData: pendingBookingPayload || {},
+          doctorMode: doctorMode,
+          couponCode: pendingPackageCoupon ? pendingPackageCoupon.code : '',
+          pageUrl: window.location.href
+        }),
+        headers: { 'Content-Type': 'application/json' }
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (res) {
+          if (requestId !== packageStripeRequestId) {
+            return null;
+          }
+
+          if (res.success && res.data && res.data.clientSecret) {
+            currentSessionId = res.data.sessionId;
+            if (shouldMount !== false) {
+              initStripeCheckout(res.data.clientSecret);
+            }
+            return res.data;
+          }
+
+          var errMsg = (res.data && res.data.message) ? res.data.message : 'Error al crear la sesión de pago.';
+          showStripeError(errMsg);
+          throw new Error(errMsg);
+        })
+        .catch(function (err) {
+          if (requestId === packageStripeRequestId) {
+            console.error('[VM Stripe Appointment] Fetch error:', err);
+            showStripeError(err.message || 'Ocurrió un error de conexión. Intenta de nuevo.');
+          }
+          return null;
+        });
+    }
+
+    function getAppointmentCustomerEmail() {
+      if (pendingBookingPayload && pendingBookingPayload.bookings && pendingBookingPayload.bookings[0] && pendingBookingPayload.bookings[0].customer) {
+        return pendingBookingPayload.bookings[0].customer.email || '';
+      }
+      return intakeEmail ? intakeEmail.value.trim() : '';
+    }
+
+    function setPackageCouponMessage(message, type) {
+      if (!packageCouponMessage) return;
+      packageCouponMessage.textContent = message || '';
+      packageCouponMessage.classList.toggle('is-success', type === 'success');
+      packageCouponMessage.classList.toggle('is-error', type === 'error');
+    }
+
+    function applyPackageCoupon() {
+      if (!packageCouponInput) {
+        return;
+      }
+
+      if (activeBookingFlow === 'package' && (!selectedPackage || !pendingPackageCustomer)) {
+        return;
+      }
+
+      if (activeBookingFlow === 'appointment' && (!selectedService || !pendingBookingPayload)) {
+        return;
+      }
+
+      var code = packageCouponInput.value.trim();
+
+      if (!code) {
+        pendingPackageCoupon = null;
+        pendingPackagePricing = null;
+        setPackageCouponMessage('Cupón eliminado.', 'success');
+        updatePaymentSummary();
+        if (payMethodStripeBtn && payMethodStripeBtn.classList.contains('is-active')) {
+          activeBookingFlow === 'package' ? createPackageStripeSession() : createAppointmentStripeSession();
+        }
+        return;
+      }
+
+      if (packageCouponApply) {
+        packageCouponApply.disabled = true;
+        packageCouponApply.textContent = 'Validando...';
+      }
+      setPackageCouponMessage('Validando cupón...', '');
+
+      var validateAction = activeBookingFlow === 'package'
+        ? vmhbAction('validatePackageCoupon', 'vmhb_amelia_validate_package_coupon')
+        : vmhbAction('validateAppointmentCoupon', 'vmhb_amelia_validate_appointment_coupon');
+      var validateUrl = VM_AJAX_URL + (VM_AJAX_URL.indexOf('?') !== -1 ? '&' : '?') + 'action=' + validateAction;
+      var validatePayload = activeBookingFlow === 'package'
+        ? {
+            packageId: selectedPackage.id,
+            couponCode: code,
+            customerEmail: pendingPackageCustomer.email
+          }
+        : {
+            serviceId: selectedService.id,
+            servicePrice: selectedService.price,
+            couponCode: code,
+            customerEmail: getAppointmentCustomerEmail()
+          };
+
+      fetch(validateUrl, {
+        method: 'POST',
+        body: JSON.stringify(validatePayload),
+        headers: { 'Content-Type': 'application/json' }
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (res) {
+          if (res.success && res.data && res.data.coupon && res.data.pricing) {
+            pendingPackageCoupon = res.data.coupon;
+            pendingPackagePricing = res.data.pricing;
+            setPackageCouponMessage('Cupón aplicado: ' + pendingPackageCoupon.code, 'success');
+            updatePaymentSummary();
+            if (payMethodStripeBtn && payMethodStripeBtn.classList.contains('is-active')) {
+              activeBookingFlow === 'package' ? createPackageStripeSession() : createAppointmentStripeSession();
+            }
+            return;
+          }
+
+          pendingPackageCoupon = null;
+          pendingPackagePricing = null;
+          updatePaymentSummary();
+          setPackageCouponMessage((res.data && res.data.message) ? res.data.message : 'Cupón inválido.', 'error');
+          if (payMethodStripeBtn && payMethodStripeBtn.classList.contains('is-active')) {
+            activeBookingFlow === 'package' ? createPackageStripeSession() : createAppointmentStripeSession();
+          }
+        })
+        .catch(function () {
+          setPackageCouponMessage('No pudimos validar el cupón. Intenta de nuevo.', 'error');
+        })
+        .finally(function () {
+          if (packageCouponApply) {
+            packageCouponApply.disabled = false;
+            packageCouponApply.textContent = 'Aplicar';
+          }
+        });
+    }
+
+    function completeFreePackagePurchase() {
+      if (activeBookingFlow === 'package' && (!selectedPackage || !pendingPackageCustomer)) {
+        return;
+      }
+
+      if (activeBookingFlow === 'appointment' && (!selectedService || !pendingBookingPayload)) {
+        return;
+      }
+
+      var pricing = getActivePricing();
+      if (!pricing || Number(pricing.total) > 0) {
+        setPackageCouponMessage(activeBookingFlow === 'package' ? 'Este paquete todavía requiere pago.' : 'Esta consulta todavía requiere pago.', 'error');
+        return;
+      }
+
+      if (freePackageCheckoutBtn) {
+        freePackageCheckoutBtn.disabled = true;
+        freePackageCheckoutBtn.textContent = activeBookingFlow === 'package' ? 'Registrando paquete...' : 'Confirmando consulta...';
+      }
+
+      var freeAction = activeBookingFlow === 'package'
+        ? vmhbAction('completeFreePackagePurchase', 'vmhb_complete_free_package_purchase')
+        : vmhbAction('completeFreeAppointmentBooking', 'vmhb_complete_free_appointment_booking');
+      var freeUrl = VM_AJAX_URL + (VM_AJAX_URL.indexOf('?') !== -1 ? '&' : '?') + 'action=' + freeAction;
+      if (!pendingPackageAttemptId) {
+        pendingPackageAttemptId = makePackageAttemptId();
+      }
+      var freePayload = activeBookingFlow === 'package'
+        ? {
+            packageId: selectedPackage.id,
+            customerData: pendingPackageCustomer,
+            couponCode: pendingPackageCoupon ? pendingPackageCoupon.code : '',
+            attemptId: pendingPackageAttemptId
+          }
+        : {
+            serviceId: selectedService.id,
+            servicePrice: selectedService.price,
+            customerEmail: getAppointmentCustomerEmail(),
+            bookingData: pendingBookingPayload || {},
+            doctorMode: doctorMode,
+            couponCode: pendingPackageCoupon ? pendingPackageCoupon.code : '',
+            attemptId: pendingPackageAttemptId
+          };
+
+      fetch(freeUrl, {
+        method: 'POST',
+        body: JSON.stringify(freePayload),
+        headers: { 'Content-Type': 'application/json' }
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (res) {
+          if (res.success && res.data && res.data.status === 'complete') {
+            showSuccessFromPayment();
+            return;
+          }
+
+          setPackageCouponMessage((res.data && res.data.message) ? res.data.message : 'No se pudo completar la operación.', 'error');
+        })
+        .catch(function () {
+          setPackageCouponMessage('No se pudo completar la operación. Intenta de nuevo.', 'error');
+        })
+        .finally(function () {
+          if (freePackageCheckoutBtn) {
+            freePackageCheckoutBtn.disabled = false;
+            freePackageCheckoutBtn.textContent = activeBookingFlow === 'package' ? 'Completar compra sin pago' : 'Confirmar consulta sin pago';
+          }
+        });
+    }
+
+    if (packageCouponApply) {
+      packageCouponApply.addEventListener('click', applyPackageCoupon);
+    }
+
+    if (packageCouponInput) {
+      packageCouponInput.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          applyPackageCoupon();
+        }
+      });
+    }
+
+    if (freePackageCheckoutBtn) {
+      freePackageCheckoutBtn.addEventListener('click', completeFreePackagePurchase);
     }
 
     function renderPayPalButtons() {
@@ -1238,7 +1842,8 @@
               method: 'POST',
               body: JSON.stringify({
                 packageId: selectedPackage.id,
-                customerData: pendingPackageCustomer
+                customerData: pendingPackageCustomer,
+                couponCode: pendingPackageCoupon ? pendingPackageCoupon.code : ''
               }),
               headers: { 'Content-Type': 'application/json' }
             })
@@ -1265,7 +1870,8 @@
               serviceName: serviceName,
               servicePrice: servicePrice,
               bookingData: pendingBookingPayload || {},
-              doctorMode: doctorMode
+              doctorMode: doctorMode,
+              couponCode: pendingPackageCoupon ? pendingPackageCoupon.code : ''
             }),
             headers: { 'Content-Type': 'application/json' }
           })
@@ -1294,12 +1900,14 @@
             ? {
                 orderID: data.orderID,
                 packageId: selectedPackage ? selectedPackage.id : 0,
-                customerData: pendingPackageCustomer || {}
+                customerData: pendingPackageCustomer || {},
+                couponCode: pendingPackageCoupon ? pendingPackageCoupon.code : ''
               }
             : {
                 orderID: data.orderID,
                 bookingData: pendingBookingPayload || {},
-                doctorMode: doctorMode
+                doctorMode: doctorMode,
+                couponCode: pendingPackageCoupon ? pendingPackageCoupon.code : ''
               };
 
           return fetch(captureUrl, {
@@ -1929,15 +2537,14 @@
       });
     });
 
-    if (packageCta) {
-      packageCta.addEventListener('click', function (event) {
-        event.preventDefault();
-        if (!selectedPackage) {
-          loadPackages();
-          alert('Selecciona un paquete para continuar.');
+    if (intakeSummary) {
+      intakeSummary.addEventListener('click', function (event) {
+        var button = event.target.closest('.vm-speed-summary-package-content');
+        if (!button) {
           return;
         }
-        showIntakeStep();
+        event.preventDefault();
+        openPackageContentModal(selectedPackage);
       });
     }
 
@@ -1994,6 +2601,8 @@
           var packageLastName = packageNameParts.length > 0 ? packageNameParts.join(' ') : ' ';
 
           pendingBookingPayload = null;
+          resetPackageCouponState();
+          pendingPackageAttemptId = makePackageAttemptId();
           pendingPackageCustomer = {
             name: n,
             firstName: packageFirstName,
@@ -2005,42 +2614,14 @@
             message: packageNote
           };
 
-          var packageCreateUrl = VM_AJAX_URL + (VM_AJAX_URL.indexOf('?') !== -1 ? '&' : '?') + 'action=' + vmhbAction('stripeCreatePackageSession', 'vmhb_stripe_create_package_session');
-
-          fetch(packageCreateUrl, {
-            method: 'POST',
-            body: JSON.stringify({
-              packageId: selectedPackage.id,
-              customerData: pendingPackageCustomer,
-              pageUrl: window.location.href
-            }),
-            headers: { 'Content-Type': 'application/json' }
-          })
-            .then(function (res) { return res.json(); })
-            .then(function (res) {
-              submitBookingBtn.disabled = false;
-              submitBookingBtn.textContent = 'Continuar al pago';
-
-              if (res.success && res.data && res.data.clientSecret) {
-                currentSessionId = res.data.sessionId;
-                updatePaymentSummary();
-                switchPaymentMethod('stripe');
-                showPaymentStep();
-                setTimeout(function () {
-                  initStripeCheckout(res.data.clientSecret);
-                }, 500);
-              } else {
-                console.error('[VM Stripe Package] Session error:', res);
-                var errMsg = (res.data && res.data.message) ? res.data.message : 'Error al crear la sesión de pago.';
-                alert(errMsg);
-              }
-            })
-            .catch(function (err) {
-              console.error('[VM Stripe Package] Fetch error:', err);
-              submitBookingBtn.disabled = false;
-              submitBookingBtn.textContent = 'Continuar al pago';
-              alert('Ocurrió un error de conexión. Intenta de nuevo.');
-            });
+          submitBookingBtn.disabled = false;
+          submitBookingBtn.textContent = 'Continuar al pago';
+          updatePaymentSummary();
+          switchPaymentMethod('stripe');
+          showPaymentStep();
+          setTimeout(function () {
+            createPackageStripeSession();
+          }, 500);
           return;
         }
 
@@ -2111,47 +2692,25 @@
         }
 
         pendingBookingPayload = ameliaPayload;
+        resetPackageCouponState();
+        pendingPackageAttemptId = makePackageAttemptId();
 
-        // Crear Stripe Checkout Session
-        var serviceName = selectedService.category + ' - ' + selectedService.type;
-        var stripePayload = {
-          serviceName: serviceName,
-          servicePrice: selectedService.price,
-          customerEmail: e,
-          bookingData: ameliaPayload,
-          doctorMode: doctorMode,
-          pageUrl: window.location.href
-        };
-
-        var createUrl = VM_AJAX_URL + (VM_AJAX_URL.indexOf('?') !== -1 ? '&' : '?') + 'action=' + vmhbAction('stripeCreateSession', 'vm_stripe_create_session');
-
-        fetch(createUrl, {
-          method: 'POST',
-          body: JSON.stringify(stripePayload),
-          headers: { 'Content-Type': 'application/json' }
-        })
-          .then(function (res) { return res.json(); })
-          .then(function (res) {
+        createAppointmentStripeSession(false)
+          .then(function (sessionData) {
             submitBookingBtn.disabled = false;
             submitBookingBtn.textContent = 'Continuar al pago';
 
-            if (res.success && res.data && res.data.clientSecret) {
-              currentSessionId = res.data.sessionId;
-
+            if (sessionData && sessionData.clientSecret) {
               // Actualizar resumen de pago
               updatePaymentSummary();
 
               // Transicionar al stage de pago
               showPaymentStep();
-
-              // Inicializar Stripe Checkout embebido
               setTimeout(function () {
-                initStripeCheckout(res.data.clientSecret);
+                initStripeCheckout(sessionData.clientSecret);
               }, 500);
             } else {
-              console.error('[VM Stripe] Session error:', res);
-              var errMsg = (res.data && res.data.message) ? res.data.message : 'Error al crear la sesión de pago.';
-              alert(errMsg);
+              alert('Error al crear la sesión de pago.');
             }
           })
           .catch(function (err) {

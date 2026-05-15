@@ -126,7 +126,6 @@ if ( ! defined( 'ABSPATH' ) ) {
         <div class="vm-speed-package-panel" id="vmSpeedPackagePanel" hidden>
           <div class="vm-speed-package-grid" id="vmSpeedPackageGrid"></div>
           <div class="vm-speed-package-empty" id="vmSpeedPackageEmpty" hidden>No hay paquetes disponibles para compra en este momento.</div>
-          <button class="vm-speed-booking__cta vm-speed-package-cta" id="vmSpeedPackageCta" type="button">Comprar paquete</button>
         </div>
 
         <div class="vm-speed-ai-help">
@@ -291,20 +290,62 @@ if ( ! defined( 'ABSPATH' ) ) {
             <span class="vm-speed-intake-summary__label" id="vmPaymentSummaryDoctorLabel">Especialista</span>
             <span class="vm-speed-intake-summary__value" id="vmPaymentSummaryDoctor">—</span>
           </div>
-          <div class="vm-speed-intake-summary__row">
-            <span class="vm-speed-intake-summary__icon">
-              <svg viewBox="0 0 24 24" fill="none" width="20" height="20">
-                <path d="M12 8v4l3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-                <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8" />
-              </svg>
-            </span>
-            <span class="vm-speed-intake-summary__label">Total</span>
-            <span class="vm-speed-intake-summary__value" id="vmPaymentSummaryTotal">—</span>
-          </div>
-        </div>
+	          <div class="vm-speed-intake-summary__row" id="vmPaymentSubtotalRow">
+	            <span class="vm-speed-intake-summary__icon">
+	              <svg viewBox="0 0 24 24" fill="none" width="20" height="20">
+	                <path d="M12 8v4l3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+	                <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8" />
+	              </svg>
+	            </span>
+	            <span class="vm-speed-intake-summary__label" id="vmPaymentSummarySubtotalLabel">Subtotal</span>
+	            <span class="vm-speed-intake-summary__value" id="vmPaymentSummarySubtotal">—</span>
+	          </div>
+	          <div class="vm-speed-intake-summary__row" id="vmPaymentPackageDiscountRow" hidden>
+	            <span class="vm-speed-intake-summary__icon">
+	              <svg viewBox="0 0 24 24" fill="none" width="20" height="20">
+	                <path d="M5 19L19 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+	                <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.8" />
+	                <circle cx="16" cy="16" r="2" stroke="currentColor" stroke-width="1.8" />
+	              </svg>
+	            </span>
+	            <span class="vm-speed-intake-summary__label">Descuento paquete</span>
+	            <span class="vm-speed-intake-summary__value" id="vmPaymentPackageDiscount">—</span>
+	          </div>
+	          <div class="vm-speed-intake-summary__row" id="vmPaymentCouponDiscountRow" hidden>
+	            <span class="vm-speed-intake-summary__icon">
+	              <svg viewBox="0 0 24 24" fill="none" width="20" height="20">
+	                <path d="M4.5 9V6.75C4.5 5.78 5.28 5 6.25 5H18C18.83 5 19.5 5.67 19.5 6.5V9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+	                <path d="M4.5 15V17.25C4.5 18.22 5.28 19 6.25 19H18C18.83 19 19.5 18.33 19.5 17.5V15" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+	                <path d="M7 12H17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+	              </svg>
+	            </span>
+	            <span class="vm-speed-intake-summary__label">Cupón</span>
+	            <span class="vm-speed-intake-summary__value" id="vmPaymentCouponDiscount">—</span>
+	          </div>
+	          <div class="vm-speed-intake-summary__row">
+	            <span class="vm-speed-intake-summary__icon">
+	              <svg viewBox="0 0 24 24" fill="none" width="20" height="20">
+	                <path d="M12 8v4l3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+	                <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8" />
+	              </svg>
+	            </span>
+	            <span class="vm-speed-intake-summary__label">Total</span>
+	            <span class="vm-speed-intake-summary__value" id="vmPaymentSummaryTotal">—</span>
+	          </div>
+	        </div>
 
-        <!-- Selector de método de pago -->
-        <div class="vm-speed-payment-methods">
+	        <div class="vm-speed-coupon-panel" id="vmSpeedPackageCouponPanel" hidden>
+	          <label class="vm-speed-coupon-panel__label" for="vmSpeedPackageCouponInput">¿Tienes código de descuento?</label>
+	          <div class="vm-speed-coupon-panel__row">
+	            <input type="text" id="vmSpeedPackageCouponInput" placeholder="Código de cupón" autocomplete="off">
+	            <button type="button" id="vmSpeedPackageCouponApply">Aplicar</button>
+	          </div>
+	          <p class="vm-speed-coupon-panel__message" id="vmSpeedPackageCouponMessage"></p>
+	          <button type="button" class="vm-speed-free-package-btn" id="vmSpeedFreePackageCheckout" hidden>Completar compra sin pago</button>
+	        </div>
+
+	        <!-- Selector de método de pago -->
+	        <div class="vm-speed-payment-methods">
           <button type="button" class="vm-speed-payment-method-btn is-active" id="vmPayMethodStripe" data-method="stripe">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect>

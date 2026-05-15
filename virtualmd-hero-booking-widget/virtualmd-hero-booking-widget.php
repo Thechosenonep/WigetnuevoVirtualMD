@@ -2,7 +2,7 @@
 /**
  * Plugin Name: VirtualMD Hero Booking Widget
  * Description: Widget de agendamiento, pagos y notificaciones de VirtualMD mediante shortcode.
- * Version: 1.0.11
+ * Version: 1.0.17
  * Author: VirtualMD
  */
 
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 define( 'VMHB_PLUGIN_FILE', __FILE__ );
 define( 'VMHB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'VMHB_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
-define( 'VMHB_VERSION', '1.0.11' );
+define( 'VMHB_VERSION', '1.0.17' );
 
 require_once VMHB_PLUGIN_DIR . 'includes/amelia-notifications.php';
 require_once VMHB_PLUGIN_DIR . 'includes/amelia-availability.php';
@@ -58,8 +58,12 @@ function enqueue_widget_assets() {
             'paypalCaptureOrder'  => 'vmhb_paypal_capture_order',
             'paypalCreatePackageOrder' => 'vmhb_paypal_create_package_order',
             'paypalCapturePackageOrder' => 'vmhb_paypal_capture_package_order',
+            'completeFreePackagePurchase' => 'vmhb_complete_free_package_purchase',
             'catalog'             => 'vmhb_amelia_get_catalog',
             'packages'            => 'vmhb_amelia_get_packages',
+            'validatePackageCoupon'=> 'vmhb_amelia_validate_package_coupon',
+            'validateAppointmentCoupon'=> 'vmhb_amelia_validate_appointment_coupon',
+            'completeFreeAppointmentBooking'=> 'vmhb_complete_free_appointment_booking',
             'providers'           => 'vmhb_amelia_get_providers',
             'slots'               => 'vmhb_amelia_get_slots',
         ],
@@ -106,11 +110,15 @@ function register_ajax_handlers() {
         'vmhb_paypal_capture_order'        => 'vm_paypal_capture_order_handler',
         'vmhb_paypal_create_package_order' => 'vm_paypal_create_package_order_handler',
         'vmhb_paypal_capture_package_order'=> 'vm_paypal_capture_package_order_handler',
+        'vmhb_complete_free_package_purchase'=> 'vm_package_complete_free_purchase_handler',
         'vmhb_paypal_process_async_booking'=> 'vm_paypal_process_async_booking_handler',
         'vmhb_stripe_create_session'       => 'vm_stripe_create_session_handler',
         'vmhb_stripe_verify_payment'       => 'vm_stripe_verify_payment_handler',
         'vmhb_stripe_create_package_session'=> 'vm_stripe_create_package_session_handler',
         'vmhb_stripe_verify_package_payment'=> 'vm_stripe_verify_package_payment_handler',
+        'vmhb_amelia_validate_package_coupon'=> 'vm_amelia_validate_package_coupon_handler',
+        'vmhb_amelia_validate_appointment_coupon'=> 'vm_amelia_validate_appointment_coupon_handler',
+        'vmhb_complete_free_appointment_booking'=> 'vm_appointment_complete_free_booking_handler',
     ];
 
     foreach ( $handlers as $action => $callback ) {

@@ -64,6 +64,8 @@ function vm_stripe_create_session_handler() {
     $customer_email = isset( $data['customerEmail'] )  ? sanitize_email( $data['customerEmail'] )       : '';
     $booking_data   = isset( $data['bookingData'] )    ? $data['bookingData']                            : [];
     $doctor_mode    = isset( $data['doctorMode'] ) && $data['doctorMode'] === 'auto' ? 'auto' : 'manual';
+    $coupon_code    = isset( $data['couponCode'] ) ? sanitize_text_field( $data['couponCode'] ) : '';
+    $service_id     = isset( $data['serviceId'] ) ? (int) $data['serviceId'] : ( isset( $booking_data['serviceId'] ) ? (int) $booking_data['serviceId'] : 0 );
 
     // Validaciones
     if ( empty( $service_name ) || $service_price <= 0 ) {
@@ -78,6 +80,32 @@ function vm_stripe_create_session_handler() {
 
     if ( empty( $booking_data ) || ! is_array( $booking_data ) ) {
         wp_send_json_error( [ 'message' => 'Datos de booking incompletos. No se creó la sesión de pago.' ] );
+        return;
+    }
+
+    $pricing = function_exists( __NAMESPACE__ . '\\vm_appointment_build_pricing' )
+        ? vm_appointment_build_pricing( $service_price )
+        : [ 'total' => $service_price ];
+
+    if ( $coupon_code !== '' ) {
+        if ( ! function_exists( __NAMESPACE__ . '\\vm_appointment_validate_coupon_for_service' ) ) {
+            wp_send_json_error( [ 'message' => 'No se pudo validar el cupón.' ] );
+            return;
+        }
+
+        $coupon_result = vm_appointment_validate_coupon_for_service( $service_id, $service_price, $coupon_code, $customer_email );
+
+        if ( empty( $coupon_result['success'] ) ) {
+            wp_send_json_error( [ 'message' => $coupon_result['message'] ] );
+            return;
+        }
+
+        $pricing = $coupon_result['pricing'];
+        $booking_data = vm_appointment_apply_coupon_to_booking_data( $booking_data, $pricing );
+    }
+
+    if ( (float) $pricing['total'] <= 0 ) {
+        wp_send_json_error( [ 'message' => 'Esta consulta no requiere pago. Confírmala con el botón de cupón.' ] );
         return;
     }
 
@@ -98,7 +126,7 @@ function vm_stripe_create_session_handler() {
         $stripe = new \Stripe\StripeClient( STRIPE_SECRET_KEY );
 
         // Convertir precio a centavos (Stripe trabaja en la unidad más pequeña)
-        $amount_cents = intval( round( $service_price * 100 ) );
+        $amount_cents = intval( round( (float) $pricing['total'] * 100 ) );
 
         // Determinar la URL de retorno (usar la URL de la página actual enviada desde el frontend)
         $page_url = isset( $data['pageUrl'] ) ? esc_url_raw( $data['pageUrl'] ) : home_url( '/' );
@@ -125,7 +153,10 @@ function vm_stripe_create_session_handler() {
                 'quantity' => 1,
             ] ],
             'metadata' => [
-                'source' => 'virtualmd_widget',
+                'source'     => 'virtualmd_widget',
+                'couponId'   => ! empty( $pricing['couponId'] ) ? (string) $pricing['couponId'] : '',
+                'couponCode' => ! empty( $pricing['couponCode'] ) ? (string) $pricing['couponCode'] : '',
+                'total'      => (string) $pricing['total'],
             ],
             'return_url' => $return_url,
         ] );
@@ -137,6 +168,7 @@ function vm_stripe_create_session_handler() {
             [
                 'bookingData' => $booking_data,
                 'doctorMode'  => $doctor_mode,
+                'pricing'     => $pricing,
             ],
             2 * HOUR_IN_SECONDS
         );

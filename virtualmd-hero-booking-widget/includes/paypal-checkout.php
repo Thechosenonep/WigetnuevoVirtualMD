@@ -1327,10 +1327,16 @@ function vm_paypal_create_order_handler()
         return;
     }
 
-    $service_name = isset($data['serviceName']) ? sanitize_text_field($data['serviceName']) : '';
-    $service_price = isset($data['servicePrice']) ? floatval($data['servicePrice']) : 0;
-    $booking_data = isset($data['bookingData']) && is_array($data['bookingData']) ? $data['bookingData'] : [];
-    $doctor_mode = isset($data['doctorMode']) && $data['doctorMode'] === 'auto' ? 'auto' : 'manual';
+    $service_name  = isset( $data['serviceName'] )  ? sanitize_text_field( $data['serviceName'] )  : '';
+    $service_price = isset( $data['servicePrice'] ) ? floatval( $data['servicePrice'] )            : 0;
+    $booking_data  = isset( $data['bookingData'] ) && is_array( $data['bookingData'] ) ? $data['bookingData'] : [];
+    $doctor_mode   = isset( $data['doctorMode'] ) && $data['doctorMode'] === 'auto' ? 'auto' : 'manual';
+    $coupon_code   = isset( $data['couponCode'] ) ? sanitize_text_field( $data['couponCode'] ) : '';
+    $customer_email = '';
+    if ( ! empty( $booking_data['bookings'][0]['customer']['email'] ) ) {
+        $customer_email = sanitize_email( $booking_data['bookings'][0]['customer']['email'] );
+    }
+    $service_id = isset( $booking_data['serviceId'] ) ? (int) $booking_data['serviceId'] : 0;
 
     if (empty($service_name) || $service_price <= 0) {
         wp_send_json_error(['message' => 'Servicio o precio inválido']);
@@ -1342,11 +1348,37 @@ function vm_paypal_create_order_handler()
         return;
     }
 
-    $availability_result = vm_paypal_ensure_provider_for_booking($booking_data, $doctor_mode);
-    if (empty($availability_result['success'])) {
-        wp_send_json_error([
-            'message' => isset($availability_result['message']) ? $availability_result['message'] : 'El horario seleccionado ya no está disponible',
-        ]);
+    $pricing = function_exists( __NAMESPACE__ . '\\vm_appointment_build_pricing' )
+        ? vm_appointment_build_pricing( $service_price )
+        : [ 'total' => $service_price ];
+
+    if ( $coupon_code !== '' ) {
+        if ( ! function_exists( __NAMESPACE__ . '\\vm_appointment_validate_coupon_for_service' ) ) {
+            wp_send_json_error( [ 'message' => 'No se pudo validar el cupón.' ] );
+            return;
+        }
+
+        $coupon_result = vm_appointment_validate_coupon_for_service( $service_id, $service_price, $coupon_code, $customer_email );
+
+        if ( empty( $coupon_result['success'] ) ) {
+            wp_send_json_error( [ 'message' => $coupon_result['message'] ] );
+            return;
+        }
+
+        $pricing = $coupon_result['pricing'];
+        $booking_data = vm_appointment_apply_coupon_to_booking_data( $booking_data, $pricing );
+    }
+
+    if ( (float) $pricing['total'] <= 0 ) {
+        wp_send_json_error( [ 'message' => 'Esta consulta no requiere pago. Confírmala con el botón de cupón.' ] );
+        return;
+    }
+
+    $availability_result = vm_paypal_ensure_provider_for_booking( $booking_data, $doctor_mode );
+    if ( empty( $availability_result['success'] ) ) {
+        wp_send_json_error( [
+            'message' => isset( $availability_result['message'] ) ? $availability_result['message'] : 'El horario seleccionado ya no está disponible',
+        ] );
         return;
     }
     $booking_data = $availability_result['booking_data'];
@@ -1360,16 +1392,14 @@ function vm_paypal_create_order_handler()
 
     // Crear orden
     $order_payload = [
-        'intent' => 'CAPTURE',
-        'purchase_units' => [
-            [
-                'description' => $service_name . ' - VirtualMD',
-                'amount' => [
-                    'currency_code' => 'MXN',
-                    'value' => number_format($service_price, 2, '.', ''),
-                ],
-            ]
-        ],
+        'intent'         => 'CAPTURE',
+        'purchase_units' => [ [
+            'description' => $service_name . ' - VirtualMD',
+            'amount'      => [
+                'currency_code' => 'MXN',
+                'value'         => number_format( (float) $pricing['total'], 2, '.', '' ),
+            ],
+        ] ],
     ];
 
     $response = wp_remote_post(vm_paypal_api_base() . '/v2/checkout/orders', [
@@ -1401,7 +1431,8 @@ function vm_paypal_create_order_handler()
         'vm_paypal_booking_' . $body['id'],
         [
             'bookingData' => $booking_data,
-            'doctorMode' => $doctor_mode,
+            'doctorMode'  => $doctor_mode,
+            'pricing'     => $pricing,
         ],
         2 * HOUR_IN_SECONDS
     );

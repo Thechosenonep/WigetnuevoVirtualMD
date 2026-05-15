@@ -5,12 +5,11 @@ if (!defined('ABSPATH')) {
   exit;
 }
 
-function vm_amelia_get_catalog_handler()
-{
-  $cache_key = 'vm_amelia_catalog_available_v2';
-  $cached = get_transient($cache_key);
-  if ($cached !== false) {
-    wp_send_json_success($cached);
+function vm_amelia_get_catalog_handler() {
+  $cache_key = 'vm_amelia_catalog_available_v3';
+  $cached    = get_transient( $cache_key );
+  if ( $cached !== false ) {
+    wp_send_json_success( $cached );
     return;
   }
 
@@ -144,10 +143,10 @@ function vm_amelia_get_providers_handler()
 {
   $service_id = isset($_GET['serviceId']) ? (int) $_GET['serviceId'] : 0;
 
-  $cache_key = 'vm_amelia_providers_available_v2_' . $service_id;
-  $cached = get_transient($cache_key);
-  if ($cached !== false) {
-    wp_send_json_success($cached);
+  $cache_key = 'vm_amelia_providers_available_v3_' . $service_id;
+  $cached    = get_transient( $cache_key );
+  if ( $cached !== false ) {
+    wp_send_json_success( $cached );
     return;
   }
 
@@ -360,8 +359,49 @@ function vm_amelia_availability_window_dates()
   return [$start->format('Y-m-d'), $end->format('Y-m-d')];
 }
 
-function vm_amelia_get_slots_data($service_id, $provider_id = 0, $start_date = '', $end_date = '', $duration = 0)
-{
+function vm_amelia_parse_utc_datetime( $datetime ) {
+  $datetime = trim( (string) $datetime );
+
+  if ( $datetime === '' || $datetime === '0000-00-00 00:00:00' ) {
+    return false;
+  }
+
+  $utc = new \DateTimeZone( 'UTC' );
+  $dt  = \DateTimeImmutable::createFromFormat( 'Y-m-d H:i:s', $datetime, $utc );
+
+  if ( $dt instanceof \DateTimeImmutable ) {
+    return $dt;
+  }
+
+  try {
+    return new \DateTimeImmutable( $datetime, $utc );
+  } catch ( \Exception $e ) {
+    return false;
+  }
+}
+
+function vm_amelia_utc_datetime_to_local( $datetime, $utc_offset = null ) {
+  $dt = vm_amelia_parse_utc_datetime( $datetime );
+
+  if ( ! $dt ) {
+    return false;
+  }
+
+  if ( $utc_offset !== null && $utc_offset !== '' && is_numeric( $utc_offset ) ) {
+    $offset = (int) $utc_offset;
+    if ( $offset !== 0 ) {
+      $dt = $dt->modify( ( $offset > 0 ? '+' : '' ) . $offset . ' minutes' );
+    }
+
+    return $dt;
+  }
+
+  $tz = function_exists( 'wp_timezone' ) ? wp_timezone() : new \DateTimeZone( date_default_timezone_get() );
+
+  return $dt->setTimezone( $tz );
+}
+
+function vm_amelia_get_slots_data( $service_id, $provider_id = 0, $start_date = '', $end_date = '', $duration = 0 ) {
   global $wpdb;
   $prefix = $wpdb->prefix;
   $is_auto = empty($provider_id);
@@ -445,19 +485,18 @@ function vm_amelia_get_slots_data($service_id, $provider_id = 0, $start_date = '
   // 4. Citas existentes (todos los servicios para evitar doble booking).
   // Amelia guarda el bloque horario en appointments y el estado real de la
   // reserva del paciente en customer_bookings.
-  // NOTA: Expandimos el rango ±1 día porque Amelia guarda las fechas en UTC.
-  // Una cita a las 23:00 hora local puede ser las 05:00 UTC del día siguiente.
-  $query_start = date( 'Y-m-d', strtotime( $start_date . ' -1 day' ) ) . ' 00:00:00';
-  $query_end   = date( 'Y-m-d', strtotime( $end_date . ' +1 day' ) ) . ' 23:59:59';
+  $db_window_start = date( 'Y-m-d H:i:s', strtotime( $start_date . ' 00:00:00 -1 day' ) );
+  $db_window_end   = date( 'Y-m-d H:i:s', strtotime( $end_date . ' 23:59:59 +1 day' ) );
 
-  $appts = $wpdb->get_results($wpdb->prepare(
+  $appts = $wpdb->get_results( $wpdb->prepare(
     "SELECT DISTINCT
        a.providerId,
        a.bookingStart,
        a.bookingEnd,
        a.status AS appointmentStatus,
        cb.status AS bookingStatus,
-       cb.duration AS bookingDuration
+       cb.duration AS bookingDuration,
+       cb.utcOffset AS bookingUtcOffset
      FROM {$prefix}amelia_appointments a
      LEFT JOIN {$prefix}amelia_customer_bookings cb ON cb.appointmentId = a.id
      WHERE a.providerId IN ({$prov_in})
@@ -473,16 +512,9 @@ function vm_amelia_get_slots_data($service_id, $provider_id = 0, $start_date = '
          cb.id IS NULL
          OR cb.status IN ('approved', 'pending')
        )",
-    $query_end,
-    $query_start
-  ), ARRAY_A);
-
-  // Zona horaria local de WordPress para convertir citas de UTC a local.
-  // Amelia guarda bookingStart/bookingEnd en UTC en la DB, pero los horarios
-  // de los providers (schedule) están en hora local. Debemos convertir las
-  // citas a hora local antes de comparar.
-  $wp_tz = function_exists( 'wp_timezone' ) ? wp_timezone() : new \DateTimeZone( date_default_timezone_get() );
-  $utc_tz = new \DateTimeZone( 'UTC' );
+    $db_window_end,
+    $db_window_start
+  ), ARRAY_A );
 
   $appt_map = [];
   foreach ($appts as $a) {
@@ -490,38 +522,35 @@ function vm_amelia_get_slots_data($service_id, $provider_id = 0, $start_date = '
       continue;
     }
 
-    $pid = (int) $a['providerId'];
+    $pid        = (int) $a['providerId'];
+    $utc_offset = array_key_exists( 'bookingUtcOffset', $a ) && $a['bookingUtcOffset'] !== null && $a['bookingUtcOffset'] !== ''
+      ? (int) $a['bookingUtcOffset']
+      : null;
+    $start_dt   = vm_amelia_utc_datetime_to_local( $a['bookingStart'], $utc_offset );
 
-    // Convertir bookingStart de UTC a hora local de WordPress
-    $start_dt = new \DateTime( $a['bookingStart'], $utc_tz );
-    $start_dt->setTimezone( $wp_tz );
-    $dk   = $start_dt->format( 'Y-m-d' );
-    $s_h  = (int) $start_dt->format( 'H' );
-    $s_m  = (int) $start_dt->format( 'i' );
-
-    $start_ts = $start_dt->getTimestamp();
-
-    // Convertir bookingEnd de UTC a hora local
-    $end_ts = false;
-    if ( ! empty( $a['bookingEnd'] ) ) {
-      $end_dt = new \DateTime( $a['bookingEnd'], $utc_tz );
-      $end_dt->setTimezone( $wp_tz );
-      $end_ts = $end_dt->getTimestamp();
-    }
-
-    if (!$start_ts) {
+    if ( ! $start_dt ) {
       continue;
     }
 
-    if (!$end_ts || $end_ts <= $start_ts) {
-      $booking_duration = !empty($a['bookingDuration']) ? (int) $a['bookingDuration'] : 0;
+    $end_dt = ! empty( $a['bookingEnd'] )
+      ? vm_amelia_utc_datetime_to_local( $a['bookingEnd'], $utc_offset )
+      : false;
+
+    if ( ! $end_dt || $end_dt->getTimestamp() <= $start_dt->getTimestamp() ) {
+      $booking_duration = ! empty( $a['bookingDuration'] ) ? (int) $a['bookingDuration'] : 0;
       $fallback_seconds = $booking_duration > 0 ? $booking_duration : (int) $duration;
-      $end_ts = $start_ts + max(60, $fallback_seconds);
+      $end_dt           = $start_dt->modify( '+' . max( 60, $fallback_seconds ) . ' seconds' );
     }
 
-    $duration_minutes = max(1, (int) ceil(($end_ts - $start_ts) / 60));
-    $start_minutes = $s_h * 60 + $s_m;
-    $end_minutes = $start_minutes + $duration_minutes;
+    $dk = $start_dt->format( 'Y-m-d' );
+
+    if ( $dk < $start_date || $dk > $end_date ) {
+      continue;
+    }
+
+    $duration_minutes = max( 1, (int) ceil( ( $end_dt->getTimestamp() - $start_dt->getTimestamp() ) / 60 ) );
+    $start_minutes    = (int) $start_dt->format( 'H' ) * 60 + (int) $start_dt->format( 'i' );
+    $end_minutes      = $start_minutes + $duration_minutes;
 
     $appt_map[$pid][$dk][] = [
       $start_minutes - $time_before_min,
@@ -647,8 +676,8 @@ function vm_amelia_service_has_availability($service_id, $provider_id = 0)
 
   [$start_date, $end_date] = vm_amelia_availability_window_dates();
 
-  $cache_key = 'vm_amelia_has_availability_v2_' . md5(wp_json_encode([
-    'service' => (int) $service_id,
+  $cache_key = 'vm_amelia_has_availability_v3_' . md5( wp_json_encode( [
+    'service'  => (int) $service_id,
     'provider' => (int) $provider_id,
     'start' => $start_date,
     'end' => $end_date,
@@ -669,7 +698,7 @@ function vm_amelia_get_available_provider_ids_for_service($service_id)
 {
   [$start_date, $end_date] = vm_amelia_availability_window_dates();
 
-  $cache_key = 'vm_amelia_available_provider_ids_v2_' . md5(wp_json_encode([
+  $cache_key = 'vm_amelia_available_provider_ids_v3_' . md5( wp_json_encode( [
     'service' => (int) $service_id,
     'start' => $start_date,
     'end' => $end_date,
